@@ -1,9 +1,9 @@
-# Bug report draft — Defold (github.com/defold/defold)
+# Bug report — Defold (github.com/defold/defold)
 
-> **How to submit:** go to https://github.com/defold/defold/issues/new?template=bug_report.md
-> and paste the sections below. All fields are complete — ready to submit as is.
-> Optional extras: screenshots of the broken vs working behavior, and a reference to this
-> file in the repo as a stable URL.
+> **✅ SUBMITTED:** https://github.com/defold/defold/issues/13125 (Sept. 2026)
+> This file is the original draft, kept as stable evidence and for cross-referencing.
+> **How it was submitted:** via https://github.com/defold/defold/issues/new?template=bug_report.md,
+> pasting the sections below as is.
 
 ---
 
