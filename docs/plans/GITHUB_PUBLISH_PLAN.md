@@ -164,7 +164,7 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 
 ### Fase C — Pulido (opcional, posterior)
 13. ⬜ (opcional) Optimización de tamaño del build (§6.1): revisar si `custom_resources = /assets` arrastra archivos innecesarios al archive y aplicar compresión de texturas a los atlas grandes. *(Los `.xcf` ya quedan fuera por `.gitignore`; desplegable actual ~39 MB → prioridad baja.)*
-14. ⬜ Enlazar el repo nuevo desde el README del repo original (referencia cruzada) y viceversa.
+14. ✅ **Enlazar el repo nuevo desde el README del repo original (referencia cruzada) y viceversa** — **hecho (Sept. 2026)**: callout con enlace al repo 2D y al juego online añadido a `README.md` y `README.es.md` de `museum-game`; el repo 2D ya enlazaba al original desde su creación.
 
 ## 8. Workflow de despliegue (referencia — el archivo real y activo es `.github/workflows/deploy.yml`)
 
