@@ -13,7 +13,7 @@ A top-down exploration game where you play as a **museum curator**: walk through
 
 ## 🎮 Play online
 
-HTML5 build deployed on GitHub Pages (pending publication):
+Play free in your browser (deployed on GitHub Pages via CI):
 
 **https://nosinmipixel.github.io/museum-game-2d/**
 

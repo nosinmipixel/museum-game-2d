@@ -13,7 +13,7 @@ Juego de exploración en vista cenital donde eres el **conservador de un museo**
 
 ## 🎮 Jugar online
 
-Build HTML5 desplegado en GitHub Pages (pendiente de publicar):
+Juega gratis en tu navegador (desplegado en GitHub Pages vía CI):
 
 **https://nosinmipixel.github.io/museum-game-2d/**
 
