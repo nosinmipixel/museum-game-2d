@@ -104,7 +104,14 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 
 **Conclusión: el culpable es la variante *release* del motor wasm**, no el empaquetado del archive (absuelto) ni el modo pthread (absuelto: el bundle release sin COOP/COEP —monohilo forzado— también fallaba). Hipótesis a reportar a Defold: el motor release usa el backend **WebGPU** (ambos wasm lo incluyen; el debug fuerza el camino WebGL, donde el juego funciona). Investigación adicional suspuesta: el juego no declara `is_debug` ni condicionales de variante en Lua.
 
-**Solución aplicada:** el editor siempre empaqueta la variante **debug** — su wasm es **byte-idéntico** (md5 verificado) a `bob --variant debug`. El workflow de CI usa esa variante y reproduce exactamente el build que funciona. Punto de control: el wasm del bundle debe pesar ~2.87 MB (debug) y NO debe existir `TopDownMuseumGame_pthread.wasm` en la salida; si tras actualizar Defold el fichero sale ~2.4 MB, la variante release se ha colado en el build.
+**Solución aplicada:** el editor siempre empaqueta la variante **debug** — su wasm es **byte-idéntico** (md5 verificado) a `bob --variant debug`. El workflow de CI usa esa variante y reproduce exactamente el build que funciona.
+
+**Procedimiento al actualizar el editor Defold** (mantener CI y editor sincronizados):
+
+1. Actualizar el editor, abrir el proyecto y probar el juego en local (no actualizar `DEFOLD_SHA` si el juego falla en el editor).
+2. Obtener el sha1 del nuevo motor en https://github.com/defold/defold/releases — línea `Channel=stable sha1: …` de la versión correspondiente.
+3. Actualizar `DEFOLD_SHA` en `.github/workflows/deploy.yml` (es la única línea a cambiar) y hacer push a `main` — el CI recompila y despliega automáticamente.
+4. **Punto de control obligatorio tras cualquier cambio de motor:** el `TopDownMuseumGame.wasm` del build debe pesar **~2.87 MB** (variante debug) y NO debe existir `TopDownMuseumGame_pthread.wasm` en la salida. Si pesa ~2.4 MB, la variante release se ha colado → gameplay roto (ver tabla de diagnóstico anterior).
 
 ## 6. Riesgos y consideraciones
 

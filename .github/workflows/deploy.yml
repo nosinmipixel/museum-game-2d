@@ -15,7 +15,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # SHA1 del motor Defold del proyecto (build_input_data.json). Actualizar al cambiar de editor.
+  # SHA1 del motor Defold del proyecto. Debe coincidir SIEMPRE con la versión
+  # del editor. Al actualizar Defold: obtener el sha en
+  # https://github.com/defold/defold/releases (línea "Channel=stable sha1: ..."),
+  # actualizar esta línea y push → el CI recompila y despliega automáticamente.
+  # Punto de control post-actualización (plan §5.4): el TopDownMuseumGame.wasm
+  # del build debe pesar ~2.87 MB (variante debug). Si pesa ~2.4 MB, se ha
+  # colado la variante release → gameplay roto.
   DEFOLD_SHA: 574678c7d44be490d874fbed2d0ae6211feec4d9
 
 jobs:
