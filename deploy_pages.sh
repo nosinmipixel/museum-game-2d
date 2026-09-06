@@ -31,7 +31,7 @@ cd "$REPO_ROOT"
 BUNDLE="${1:-}"
 if [[ -z "$BUNDLE" ]]; then
 	echo "Buscando bundle HTML5 del editor..."
-	BUNDLE="$(find build -type d -path '*__htmlLaunchDir*' -mindepth 2 -maxdepth 2 2>/dev/null | head -n1 || true)"
+	BUNDLE="$(find build -type f -name index.html -path '*__htmlLaunchDir*' -printf '%h\n' 2>/dev/null | head -n1 || true)"
 	if [[ -z "$BUNDLE" || ! -f "$BUNDLE/index.html" ]]; then
 		echo "ERROR: no encontré un bundle con index.html bajo build/."
 		echo "Abre el proyecto en Defold y haz: Project → Bundle → HTML5..."
@@ -47,7 +47,6 @@ echo "Bundle: $BUNDLE"
 
 # ── 2. Construir el árbol huérfano ─────────────────────────────
 WORKTREE="$(mktemp -d)"
-trap 'rm -rf "$WORKTREE"' EXIT
 
 echo "Copiando contenido del bundle..."
 cp -r "$BUNDLE/." "$WORKTREE/"
@@ -59,14 +58,24 @@ for f in index.html dmloader.js; do
 done
 
 echo "Creando árbol de gh-pages (rama huérfana)..."
+# GIT_DIR explícito: desde el worktree temporal git no puede descubrir el repo.
+# GIT_INDEX_FILE fuera del worktree: así `git add -A` no lo incluye en el árbol
+# y no tocamos el índice real del repositorio.
+TMP_INDEX="$(mktemp -d)/index"   # ruta INEXISTENTE: git crea el índice aquí
+trap 'rm -rf "$WORKTREE" "$(dirname "$TMP_INDEX")"' EXIT
 TREE_HASH="$(
 	cd "$WORKTREE" &&
-	git --work-tree=. add -A >/dev/null 2>&1 &&
+	GIT_DIR="$REPO_ROOT/.git" \
+	GIT_WORK_TREE="$WORKTREE" \
+	GIT_INDEX_FILE="$TMP_INDEX" \
+	git add -A &&
+	GIT_DIR="$REPO_ROOT/.git" \
+	GIT_INDEX_FILE="$TMP_INDEX" \
 	git write-tree
 )"
 
 echo "Creando commit huérfano..."
-COMMIT_HASH="$(git commit-tree "$TREE_HASH" -m "Deploy: bundle HTML5 del editor ($(date -u +%Y-%m-%d_%H:%M UTC))")"
+COMMIT_HASH="$(git commit-tree "$TREE_HASH" -m "Deploy: bundle HTML5 del editor ($(date -u '+%Y-%m-%d %H:%M UTC'))")"
 
 # ── 3. Push forzado a gh-pages ─────────────────────────────────
 echo "Subiendo a origin/gh-pages (force)..."

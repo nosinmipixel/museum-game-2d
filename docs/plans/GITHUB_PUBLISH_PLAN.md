@@ -1,6 +1,6 @@
 # 🚀 Plan de publicación en GitHub — Versión Defold (2D/Lua)
 
-> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Fases A y B completadas: repo `museum-game-2d` en GitHub, CI con GitHub Actions en verde y juego servido en Pages. Quedan solo tareas opcionales de la Fase C.
+> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Despliegue activo vía **build del editor → `gh-pages`** (`deploy_pages.sh`), porque el build bob CLI diverge del editor (gameplay roto; investigación pendiente, teoría: defaults de empaquetado del CLI). El workflow CI queda en pausa (solo `workflow_dispatch`). Quedan: Fase C (opcional) y depurar la divergencia CLI.
 > Decisiones tomadas por el usuario: **repo nuevo** `museum-game-2d` · licencia **GPL-3.0** · despliegue **CI con GitHub Actions**.
 
 ---
