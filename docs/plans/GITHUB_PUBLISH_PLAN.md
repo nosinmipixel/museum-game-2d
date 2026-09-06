@@ -1,6 +1,6 @@
 # 🚀 Plan de publicación en GitHub — Versión Defold (2D/Lua)
 
-> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Despliegue activo vía **build del editor → `gh-pages`** (`deploy_pages.sh`), porque el build bob CLI diverge del editor (gameplay roto; investigación pendiente, teoría: defaults de empaquetado del CLI). El workflow CI queda en pausa (solo `workflow_dispatch`). Quedan: Fase C (opcional) y depurar la divergencia CLI.
+> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Despliegue activo. **Divergencia CLI/editor RESUELTA** (causa raíz: variante *release* del motor rompe el gameplay, ver §5.4). El CI vuelve a estar activo con `--variant debug`, que produce un motor byte-idéntico al del editor. Queda solo Fase C (opcional).
 > Decisiones tomadas por el usuario: **repo nuevo** `museum-game-2d` · licencia **GPL-3.0** · despliegue **CI con GitHub Actions**.
 
 ---
@@ -90,6 +90,21 @@ Fuente: `docs/ASSETS_LICENSE.md` del repo UPBGE (https://github.com/nosinmipixel
 - ⚠️ **CORRECCIÓN (Sept. 2026, tras el primer fallo de CI):** la plataforma web correcta es **`wasm-web`** — `js-web` fue renombrada y bob 1.13.0 falla con `Platform js-web not supported`. Además, la estructura `__htmlLaunchDir` solo la genera el **editor**: con bob por CLI la salida de `bundle` va a `build/default/<título>/`; con `--bundle-output bundle_out` es determinista: `bundle_out/<título>/`. Comando correcto:
   `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out`
   (ver workflow real en `.github/workflows/deploy.yml`).
+
+### 5.4 Diagnóstico de la divergencia CLI vs editor (RESUELTO, Sept. 2026)
+
+Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4d9`), el build bob CLI seguía rompiendo el gameplay (NPCs mal ubicados, interacciones sin respuesta, textos rotos) mientras el bundle del editor funcionaba. Diagnóstico por prueba A/B con bundles mixtos (motor de un build + archive del otro):
+
+| Motor | Archive | Resultado |
+|---|---|---|
+| debug (editor) | editor | ✅ funcionaba |
+| release (CLI) | CLI | ❌ roto |
+| release (CLI) | editor | ❌ roto |
+| debug (editor) | CLI | ✅ **funcionaba** |
+
+**Conclusión: el culpable es la variante *release* del motor wasm**, no el empaquetado del archive (absuelto) ni el modo pthread (absuelto: el bundle release sin COOP/COEP —monohilo forzado— también fallaba). Hipótesis a reportar a Defold: el motor release usa el backend **WebGPU** (ambos wasm lo incluyen; el debug fuerza el camino WebGL, donde el juego funciona). Investigación adicional suspuesta: el juego no declara `is_debug` ni condicionales de variante en Lua.
+
+**Solución aplicada:** el editor siempre empaqueta la variante **debug** — su wasm es **byte-idéntico** (md5 verificado) a `bob --variant debug`. El workflow de CI usa esa variante y reproduce exactamente el build que funciona. Punto de control: el wasm del bundle debe pesar ~2.87 MB (debug) y NO debe existir `TopDownMuseumGame_pthread.wasm` en la salida; si tras actualizar Defold el fichero sale ~2.4 MB, la variante release se ha colado en el build.
 
 ## 6. Riesgos y consideraciones
 
@@ -231,4 +246,4 @@ jobs:
 - [ ] (Opcional) Optimización de tamaño del build — desplegable actual ~39 MB, prioridad baja
 
 ---
-*Última actualización: Septiembre 2026 — **PUBLICADO**: repo en GitHub, CI en verde (`wasm-web` + `--bundle-output`), juego servido en Pages.*
+*Última actualización: Septiembre 2026 — **PUBLICADO y estable**: causa raíz de la divergencia CLI/editor identificada (variante release del motor, §5.4) y CI reactivado con `--variant debug`.*

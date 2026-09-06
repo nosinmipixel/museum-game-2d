@@ -1,10 +1,8 @@
 name: Build & Deploy HTML5 a GitHub Pages
 
 on:
-  # ⏸️ DESACTIVADO el despliegue automático: el build bob CLI diverge del build
-  # del editor (gameplay roto). Mientras se publica vía deploy_pages.sh
-  # (rama gh-pages), solo se permite ejecución manual.
-  # Para reactivar el CI: restaurar `push: branches: [main]`.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,7 @@ concurrency:
 
 env:
   # SHA1 del motor Defold del proyecto (build_input_data.json). Actualizar al cambiar de editor.
-  DEFOLD_SHA: f735c12192bf95684e6ae1ae27c400b8170fc6d8
+  DEFOLD_SHA: 574678c7d44be490d874fbed2d0ae6211feec4d9
 
 jobs:
   build:
@@ -36,13 +34,17 @@ jobs:
       - name: Descargar bob.jar (URL verificada, fijada al sha1 del proyecto)
         run: curl -fsSL -o bob.jar "https://d.defold.com/archive/${{ env.DEFOLD_SHA }}/bob/bob.jar"
 
-      - name: Compilar HTML5 (wasm-web + archive)
-        # NOTA: en Defold 1.13.x la plataforma web es 'wasm-web' (js-web fue
+      - name: Compilar HTML5 (wasm-web + archive, variante debug)
+        # NOTA 1: en Defold 1.13.x la plataforma web es 'wasm-web' (js-web fue
         # renombrada y bob falla con "Platform js-web not supported").
-        # --bundle-output hace la salida determinista: bundle_out/<Titulo>/index.html
+        # NOTA 2: --bundle-output hace la salida determinista: bundle_out/<Titulo>/
+        # NOTA 3 (causa raíz, Sept. 2026, ver plan §5.4): la variante RELEASE del
+        # motor rompe el gameplay de este juego (NPCs/interacciones/textos).
+        # El editor siempre empaqueta la variante DEBUG (byte-idéntica, md5
+        # verificado), que es la que funciona. CI la reproduce con --variant debug.
         run: >-
           java --enable-native-access=ALL-UNNAMED -jar bob.jar
-          --platform wasm-web --archive resolve build bundle
+          --platform wasm-web --variant debug --archive resolve build bundle
           --bundle-output bundle_out
 
       - name: Aplanar salida para que index.html quede en la raiz
