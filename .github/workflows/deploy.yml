@@ -1,8 +1,10 @@
 name: Build & Deploy HTML5 a GitHub Pages
 
 on:
-  push:
-    branches: [main]
+  # ⏸️ DESACTIVADO el despliegue automático: el build bob CLI diverge del build
+  # del editor (gameplay roto). Mientras se publica vía deploy_pages.sh
+  # (rama gh-pages), solo se permite ejecución manual.
+  # Para reactivar el CI: restaurar `push: branches: [main]`.
   workflow_dispatch:
 
 permissions:
