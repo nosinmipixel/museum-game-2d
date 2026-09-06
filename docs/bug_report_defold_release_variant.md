@@ -17,7 +17,7 @@ When bundling an HTML5 build with `bob` using the default engine variant (`relea
 
 We isolated the cause with cross-bundle A/B tests (engine files from one build combined with the archive of the other; see matrix below). The **content of the archive is not the cause**: swapping archives between builds changes nothing. The **engine variant is the cause**: every bundle whose wasm came from a `release` build is broken, every bundle whose wasm came from a `debug` build works.
 
-Additionally, the editor's build/launch output for this project is always the debug variant (its wasm is byte-identical, md5-verified, to `bob --variant debug` output). This means projects developed exclusively in the editor may contain logic that breaks under the release engine without the developer ever noticing — our game was "working" for months while the release engine was silently broken for it. We also bundled from the editor UI with the **Release** option enabled: the resulting bundle shows the same broken behavior, so the issue is independent of the build tool and limited to the release engine variant.
+Additionally, the editor's build/launch output for this project is always the debug variant (its wasm is byte-identical, md5-verified, to `bob --variant debug` output). This means projects developed exclusively in the editor may contain logic that breaks under the release engine without the developer ever noticing — the game played correctly in every editor test while the release engine was silently broken for it. We also bundled from the editor UI with the **Release** option enabled: the resulting bundle shows the same broken behavior, so the issue is independent of the build tool and limited to the release engine variant.
 
 **To Reproduce (REQUIRED)**
 
@@ -72,7 +72,7 @@ We have not distilled a minimal project yet. The complete game is public and bui
 
 **Logs (OPTIONAL):**
 
-None useful — that is what makes this hard to catch. The browser console shows only benign `WebGL: INVALID_ENUM: getParameter` warnings (present in both variants) and no Lua/engine errors in the broken build. The systems fail silently.
+None useful — that is what makes this hard to catch. The broken build shows only benign `WebGL: INVALID_ENUM: getParameter` console warnings and no Lua or engine errors. The systems fail silently.
 
 **Workaround (OPTIONAL):**
 
@@ -82,7 +82,7 @@ Bundle with the debug variant:
 java -jar bob.jar --platform wasm-web --variant debug --archive resolve build bundle --bundle-output bundle_out
 ```
 
-This produces a wasm byte-identical to the editor's output and works perfectly. Costs: the debug wasm is ~483 KB larger and presumably lacks release optimizations, so it is not a desirable long-term substitute for production builds.
+This produces a wasm byte-identical to the editor's output and works perfectly. Costs: the debug wasm is ~470 KB larger and presumably lacks release optimizations, so it is not a desirable long-term substitute for production builds.
 
 **Additional context (OPTIONAL):**
 
@@ -97,7 +97,7 @@ This produces a wasm byte-identical to the editor's output and works perfectly. 
 
    The bundle data (archive) was also cross-checked: compiled project settings (`game.projectc`) are byte-identical between editor and bob builds, and the archive file lists match (total size differs by ~65 KB out of ~37 MB). The archive is exonerated.
 
-2. **Threading mode ruled out.** The release dmloader gates the pthread engine on `window.isSecureContext && window.crossOriginIsolated && SharedArrayBuffer`, and our custom template enables COOP/COEP — so the release build was running the multithreaded engine while debug builds always run single-threaded (debug dmloader hardcodes `isWASMPthreadSupported = false` and no pthread files are bundled). However, removing the COOP/COEP meta tags from the release bundle's `index.html` (forcing single-threaded mode) **still produced the broken behavior** — the pthread path is not the cause.
+2. **Threading mode ruled out.** The release dmloader gates the pthread engine on `window.isSecureContext && window.crossOriginIsolated && SharedArrayBuffer`, and our custom template enables COOP/COEP — so release bundles run the multithreaded engine on isolated origins. The editor's own dmloader instead hardcodes `Module["isWASMPthreadSupported"] = false` (editor launch bundles never use the pthread engine; note that `bob --variant debug` bundles *do* include the pthread files, gated the same way as release). Two observations exonerate threading as the cause: (a) removing the COOP/COEP meta tags from the release bundle's `index.html` (forcing single-threaded mode) **still produced the broken behavior**; (b) the **multithreaded debug engine runs the game correctly** — our production site serves a `bob --variant debug` bundle with COOP/COEP enabled (isolated context → pthread engine active) and is verified working in-browser.
 
 3. **Unconfirmed hypothesis — WebGPU.** Both wasm builds contain WebGPU-related strings (`ADAPTER_FAMILY_WEBGPU`, etc.). A plausible (unverified) hypothesis is that the release engine prefers the WebGPU backend while the debug engine uses WebGL, and some engine system misbehaves under WebGPU in this game. We could not find a user-facing engine flag to force WebGL on the release build to test this. `--verify-graphics-calls=false` (present in the editor's launch arguments) is already set in both bundles' dmloader.
 
