@@ -85,9 +85,11 @@ Fuente: `docs/ASSETS_LICENSE.md` del repo UPBGE (https://github.com/nosinmipixel
 ### 5.3 Build headless con `bob` (verificado)
 - `bob.jar` se descarga de `https://d.defold.com/archive/<sha1>/bob/bob.jar` (URL verificada: responde **HTTP 200** con el sha1 del proyecto; el alias `stable` NO existe → hay que fijar el sha1).
 - **Requiere OpenJDK 25** (según manual oficial de bob).
-- Comando: `java -jar bob.jar --platform js-web --archive resolve build bundle`
+- Comando: `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out` ⚠️ (ver corrección más abajo: `js-web` ya no existe en Defold 1.13.0)
 - La plantilla `[html5] htmlfile` del `game.project` se aplica igual en CI headless. ✅
-- ✅ **Verificado en ejecución (Sept. 2026):** la salida real de `bob` es `build/default_html5/__htmlLaunchDir/<título>/` (⚠️ **no** `build/default/…` como figuraba en el primer borrador del §8). Aplanado: copiar el contenido del subdirectorio del título a `public/`.
+- ⚠️ **CORRECCIÓN (Sept. 2026, tras el primer fallo de CI):** la plataforma web correcta es **`wasm-web`** — `js-web` fue renombrada y bob 1.13.0 falla con `Platform js-web not supported`. Además, la estructura `__htmlLaunchDir` solo la genera el **editor**: con bob por CLI la salida de `bundle` va a `build/default/<título>/`; con `--bundle-output bundle_out` es determinista: `bundle_out/<título>/`. Comando correcto:
+  `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out`
+  (ver workflow real en `.github/workflows/deploy.yml`).
 
 ## 6. Riesgos y consideraciones
 
@@ -183,18 +185,16 @@ jobs:
       - name: Descargar bob.jar (URL verificada, fijada al sha1 del proyecto)
         run: curl -fsSL -o bob.jar "https://d.defold.com/archive/${{ env.DEFOLD_SHA }}/bob/bob.jar"
 
-      - name: Compilar HTML5 (js-web + archive)
-        run: java -jar bob.jar --platform js-web --archive resolve build bundle
+      - name: Compilar HTML5 (wasm-web + archive)
+        run: java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out
 
-      - name: Aplanar __htmlLaunchDir para que index.html quede en la raiz
+      - name: Aplanar salida para que index.html quede en la raiz
         run: |
           mkdir -p public
-          # El build genera build/<config>/__htmlLaunchDir/<Titulo>/ con index.html
-          # dentro (carpeta nombrada por el titulo, con espacios). Localizamos
-          # __htmlLaunchDir de forma agnostica a la configuracion y al titulo
-          # (salida real verificada: build/default_html5/__htmlLaunchDir/).
-          launch_dir="$(find build -type d -name __htmlLaunchDir | head -n1)"
-          title_dir="$(find "$launch_dir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          # bob escribe bundle_out/<Titulo>/ (carpeta nombrada por el titulo del
+          # proyecto, con espacios). Copiamos el contenido del primer subdirectorio
+          # a public/ de forma agnostica al titulo.
+          title_dir="$(find bundle_out -mindepth 1 -maxdepth 1 -type d | head -n1)"
           cp -r "$title_dir/." public/
           ls -la public/
 
@@ -215,14 +215,14 @@ jobs:
         uses: actions/deploy-pages@v4
 ```
 
-> Alternativa validable: imagen Docker oficial `defold/bob` (`docker run --rm -v "$(pwd):/project" -w /project defold/bob --platform js-web --archive resolve build bundle`) en lugar de descargar `bob.jar` + JDK. *(Fase B.8 probada con éxito usando `bob.jar` + JDK; la imagen Docker queda como alternativa si el CI da problemas.)*
+> Alternativa validable: imagen Docker oficial `defold/bob` (`docker run --rm -v "$(pwd):/project" -w /project defold/bob --platform wasm-web --archive resolve build bundle --bundle-output bundle_out`) en lugar de descargar `bob.jar` + JDK. *(bob.jar + JDK probado con éxito en local; la imagen Docker queda como alternativa.)*
 
 ## 9. Checklist final (antes de dar por cerrado)
 
 - [ ] `git init` *(pendiente)* + ✅ `.gitignore` creado (excluye `build/`, `.internal/`, `*.xcf`, `*.pxo`)
 - [x] `README.md` con enlace al original, controles verificados y URL de juego (+ `README_ES.md`)
 - [x] `LICENSE` GPL-3.0 + `docs/ASSETS_LICENSE.md` (CC BY-NC-SA 4.0 + atribución) + `docs/AI_DISCLOSURE.md` (versiones EN/ES)
-- [x] Comando de bob probado localmente (misma versión/sha1 que CI) — salida verificada: `build/default_html5/__htmlLaunchDir/` (~39 MB)
+- [x] Comando de bob probado localmente (misma versión/sha1 que CI) — ⚠️ corregido: plataforma `wasm-web` + `--bundle-output bundle_out` (salida: `bundle_out/<título>/`)
 - [ ] YAML del workflow validado (`actionlint` o `yamllint`) antes del primer push
 - [ ] `.github/workflows/deploy.yml` activo
 - [ ] Repo `museum-game-2d` público creado y `push` a `main`

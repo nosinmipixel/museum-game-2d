@@ -87,7 +87,7 @@ Toda la documentación del proyecto vive en [`docs/`](docs/):
 Build HTML5 headless con `bob` (requiere OpenJDK 25):
 
 ```bash
-java -jar bob.jar --platform js-web --archive resolve build bundle
+java -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out
 ```
 
 Auditoría de funciones globales (regla #1 de `DEFOLD_LUA_STANDARDS.md`):
