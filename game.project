@@ -1,0 +1,42 @@
+[bootstrap]
+main_collection = /bootstrap.collectionc
+
+[script]
+shared_state = 1
+
+[project]
+title = Top Down Museum Game
+custom_resources = /assets
+
+[display]
+width = 1280
+height = 768
+update_frequency = 60
+high_dpi = 1
+
+[graphics]
+default_texture_min_filter = nearest
+default_texture_mag_filter = nearest
+max_debug_vertices = 20000
+
+[physics]
+debug_alpha = 0.4
+max_collision_object_count = 512
+trigger_overlap_capacity = 128
+
+[sound]
+max_component_count = 256
+use_thread = 1
+sample_frame_count = 2048
+
+[sprite]
+max_count = 256
+
+[tilemap]
+max_tile_count = 8192
+max_count = 32
+
+[html5]
+htmlfile = /assets/custom_template.html
+heap_size = 128
+

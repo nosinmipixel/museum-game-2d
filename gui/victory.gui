@@ -1,0 +1,164 @@
+script: "/gui/victory.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+textures {
+  name: "player"
+  texture: "/features/player/player.atlas"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 384.0
+  }
+  size {
+    x: 900.0
+    y: 600.0
+  }
+  color {
+    x: 0.1
+    y: 0.1
+    z: 0.2
+  }
+  type: TYPE_BOX
+  texture: "gui/button_bubble"
+  id: "box_victory"
+  layer: "background"
+  inherit_alpha: true
+  slice9 {
+    x: 15.0
+    y: 15.0
+    z: 15.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    x: 640.0
+    y: 355.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 2000.0
+    y: 280.0
+  }
+  color {
+    x: 0.95
+    y: 0.95
+    z: 0.85
+  }
+  type: TYPE_TEXT
+  text: "<game_over_victory>"
+  font: "dialogs"
+  id: "text_victory"
+  line_break: true
+  layer: "text"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 229.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 700.0
+    y: 60.0
+  }
+  color {
+    x: 0.8
+    y: 0.95
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "<victory_rank>"
+  font: "dialogs"
+  id: "text_victory_rank"
+  layer: "text"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 169.0
+  }
+  size {
+    x: 220.0
+    y: 60.0
+  }
+  color {
+    x: 0.2
+    y: 0.6
+    z: 0.3
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "btn_new_game"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    x: 3.0
+    y: -2.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 600.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "<new_game>"
+  font: "dialogs"
+  id: "text_btn_new_game"
+  parent: "btn_new_game"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 637.0
+    y: 542.0
+  }
+  scale {
+    x: 3.0
+    y: 3.0
+  }
+  type: TYPE_BOX
+  texture: "player/victory_dance_end_game"
+  id: "box_animation_dance_end_game"
+  layer: "buttons"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+layers {
+  name: "background"
+}
+layers {
+  name: "text"
+}
+layers {
+  name: "buttons"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,217 @@
+images {
+  image: "/assets/textures/exhibition/020_021_Casa_Monte_Espadas.png"
+}
+images {
+  image: "/assets/textures/exhibition/132_lucernas_empuries.png"
+}
+images {
+  image: "/assets/textures/exhibition/1905_Puntal_Llops_Pebetero.png"
+}
+images {
+  image: "/assets/textures/exhibition/1911_1912_Xarpolar_Puntal_Llaves.png"
+}
+images {
+  image: "/assets/textures/exhibition/2899_Bastida_Iber.png"
+}
+images {
+  image: "/assets/textures/exhibition/3098b_Menente_Hoz.png"
+}
+images {
+  image: "/assets/textures/exhibition/3541_Bronce_LlomaBetxi_Vasos.png"
+}
+images {
+  image: "/assets/textures/exhibition/3662_3050_MAS_Molde.png"
+}
+images {
+  image: "/assets/textures/exhibition/4302_Ereta_Idolo.png"
+}
+images {
+  image: "/assets/textures/exhibition/4946_Anfora.png"
+}
+images {
+  image: "/assets/textures/exhibition/4947_Anfora.png"
+}
+images {
+  image: "/assets/textures/exhibition/4948_Anfora.png"
+}
+images {
+  image: "/assets/textures/exhibition/5090_Neo_Sarsa_Brazalete.png"
+}
+images {
+  image: "/assets/textures/exhibition/5099_Neo_Or_Azuela.png"
+}
+images {
+  image: "/assets/textures/exhibition/5099_Neo_Or_Azuela_Replica.png"
+}
+images {
+  image: "/assets/textures/exhibition/5117_Neo_molino_Or.png"
+}
+images {
+  image: "/assets/textures/exhibition/5140_5143_Or_Cucharas.png"
+}
+images {
+  image: "/assets/textures/exhibition/5225_Neo_Or_Anillo.png"
+}
+images {
+  image: "/assets/textures/exhibition/5267_Neo_Or.png"
+}
+images {
+  image: "/assets/textures/exhibition/5271_Neo_Or_Geminado.png"
+}
+images {
+  image: "/assets/textures/exhibition/6209_Pla_Arc_vajilla_imperial.png"
+}
+images {
+  image: "/assets/textures/exhibition/6350_Parpallo_Malaco_Adornos.png"
+}
+images {
+  image: "/assets/textures/exhibition/6560_Anfora.png"
+}
+images {
+  image: "/assets/textures/exhibition/7622_LlomaBetxi_Quesera.png"
+}
+images {
+  image: "/assets/textures/exhibition/7634_Bronce_Pesas_Telar.png"
+}
+images {
+  image: "/assets/textures/exhibition/13570_Corral_Saus.png"
+}
+images {
+  image: "/assets/textures/exhibition/13588_Valencia_Vella_escultura.png"
+}
+images {
+  image: "/assets/textures/exhibition/13590_Pinedo_Apolo_Escultura.png"
+}
+images {
+  image: "/assets/textures/exhibition/16061_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/16121_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/17109_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/17110_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/17727_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/17757_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18125_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18169_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18558_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18649_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18704_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/18888_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/19002_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/19014_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/19635_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/20045_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/20175_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/20507_Parpallo_Plaqueta.png"
+}
+images {
+  image: "/assets/textures/exhibition/22253_a_Arse_Dracma.png"
+}
+images {
+  image: "/assets/textures/exhibition/22253_b_Arse_Dracma.png"
+}
+images {
+  image: "/assets/textures/exhibition/23871_23882_Or_Flauta.png"
+}
+images {
+  image: "/assets/textures/exhibition/23981_Bronce_Arbocer_Metal.png"
+}
+images {
+  image: "/assets/textures/exhibition/23982_LArbocer_Hacha.png"
+}
+images {
+  image: "/assets/textures/exhibition/23983_LArbocer_Cincel.png"
+}
+images {
+  image: "/assets/textures/exhibition/24008_2.png"
+}
+images {
+  image: "/assets/textures/exhibition/24226_sapiens_parpallo.png"
+}
+images {
+  image: "/assets/textures/exhibition/43666_VolcanFaro_Laurel_Denticulada.png"
+}
+images {
+  image: "/assets/textures/exhibition/43737_VolcanFaro_Baston.png"
+}
+images {
+  image: "/assets/textures/exhibition/45681_neandertal_foradada_2.png"
+}
+images {
+  image: "/assets/textures/exhibition/100002_homo_heidelbergenesis.png"
+}
+images {
+  image: "/assets/textures/exhibition/100003_homo_erectus.png"
+}
+images {
+  image: "/assets/textures/exhibition/100004_paranthropus_aethiopicus.png"
+}
+images {
+  image: "/assets/textures/exhibition/100005_Australopithecus_africanus.png"
+}
+images {
+  image: "/assets/textures/exhibition/132_Empuries.png"
+}
+images {
+  image: "/assets/textures/exhibition/248_Empuries.png"
+}
+images {
+  image: "/assets/textures/exhibition/855_Bastida.png"
+}
+images {
+  image: "/assets/textures/exhibition/4225_Or.png"
+}
+images {
+  image: "/assets/textures/exhibition/5094_hacha.png"
+}
+images {
+  image: "/assets/textures/exhibition/7623_hacha.png"
+}
+images {
+  image: "/assets/textures/exhibition/22354_moneda_a_Kili.png"
+}
+images {
+  image: "/assets/textures/exhibition/43452_azagaya.png"
+}
+images {
+  image: "/assets/textures/exhibition/15741_bifaz_Cova_Negra.png"
+}
+images {
+  image: "/assets/textures/exhibition/13561.png"
+}
+images {
+  image: "/assets/textures/exhibition/13564.png"
+}
+extrude_borders: 2

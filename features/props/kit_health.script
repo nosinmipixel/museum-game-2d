@@ -1,0 +1,77 @@
+-- features/props/kit_health.script
+-- ═══════════════════════════════════════════════════════
+-- 🩹 BOTIQUÍN DE SALUD (Kit_health)
+-- ═══════════════════════════════════════════════════════
+--
+--   a) On hover: Tintado del sprite (iluminar)
+--   b) On clic:
+--      - Si salud < 100%: recupera al 100%, reproduce pick_up.sound
+--      - Si salud = 100%: muestra alerta con hint_medkit
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_KIT_HEALTH = false
+local dprint = config.make_log(DEBUG_KIT_HEALTH)
+
+-- 🌐 Recarga el hint localizado (text_alert). Definida ANTES de init para
+--    que init y el callback de idioma la capturen como upvalue (GOTCHA #1).
+local function load_hints(self)
+	local general_texts = text_loader.load("general") or {}
+	self.medkit_hint = (general_texts.tutorials and general_texts.tutorials.hint_medkit)
+		or "You can use this medkit when you have any health issues"
+end
+
+function init(self)
+	self.initial_scale = go.get_scale()
+	self.sprite_url = msg.url(nil, nil, "sprite")
+
+	load_hints(self)
+
+	-- 🌐 Recargar hint si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_hints(self)
+		dprint("[kit_health] Hint recargado por cambio de idioma a: " .. tostring(new_lang))
+	end)
+end
+
+local function set_hover_state(self, is_hovered)
+	if is_hovered then
+		go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, self.initial_scale * 1.2, go.EASING_OUTCUBIC, 0.12)
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.3, 1.3, 1.2, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	else
+		go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, self.initial_scale, go.EASING_OUTCUBIC, 0.12)
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		set_hover_state(self, message.enter)
+
+	elseif message_id == hash("interact") then
+		local health = tonumber(game_state.get_global("health") or 100)
+
+		if health < 100 then
+			-- Recuperar salud al máximo
+			game_state.set_global("health", 100)
+			sound.play("#pick_up")				dprint("[kit_health] Salud restaurada al 100%")
+		else
+			-- Salud ya al máximo: mostrar hint
+			msg.post("/gui#hud", "show_alert", {
+				text = self.medkit_hint
+			})				dprint("[kit_health] Salud al máximo: mostrando hint")
+		end
+	end
+end

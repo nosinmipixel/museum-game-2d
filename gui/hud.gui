@@ -1,0 +1,1111 @@
+script: "/gui/hud.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+fonts {
+  name: "info"
+  font: "/assets/fonts/info.font"
+}
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+textures {
+  name: "exhibition_clic"
+  texture: "/assets/textures/exhibition_clic.atlas"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 384.0
+  }
+  scale {
+    x: 0.5
+    y: 0.5
+  }
+  size {
+    x: 2560.0
+    y: 1536.0
+  }
+  type: TYPE_BOX
+  texture: "gui/Degradado_Cuadrado_pxArt"
+  id: "background"
+  adjust_mode: ADJUST_MODE_ZOOM
+  inherit_alpha: true
+  slice9 {
+    x: 150.0
+    y: 150.0
+    z: 150.0
+    w: 150.0
+  }
+}
+nodes {
+  position {
+    x: 198.0
+    y: 699.0
+  }
+  size {
+    x: 360.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  texture: "gui/speech_bubble_c_dark_3px"
+  id: "box_background_player_a"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 10.0
+    z: 10.0
+    w: 10.0
+  }
+  alpha: 0.8
+}
+nodes {
+  position {
+    x: 1083.0
+    y: 699.0
+  }
+  size {
+    x: 360.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  texture: "gui/speech_bubble_c_dark_3px"
+  id: "box_background_player_b"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 10.0
+    z: 10.0
+    w: 10.0
+  }
+  alpha: 0.8
+}
+nodes {
+  position {
+    x: 173.0
+    y: 725.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_health"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 949.0
+    y: 725.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<level>"
+  font: "dialogs"
+  id: "text_skills"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1199.0
+    y: 729.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 175.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<00>"
+  font: "dialogs"
+  id: "text_quiz_total"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1199.0
+    y: 700.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 175.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<00>"
+  font: "dialogs"
+  id: "text_quiz_restoration_total"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1112.0
+    y: 729.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 175.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<00>"
+  font: "dialogs"
+  id: "text_items_collected"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1112.0
+    y: 700.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 175.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<00>"
+  font: "dialogs"
+  id: "text_bugs_total"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 916.0
+    y: 694.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 300.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<tasks>"
+  font: "dialogs"
+  id: "text_tasks_total"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 40.0
+    y: 726.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_heart"
+  id: "box_icon_health"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 929.0
+    y: 725.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_script_text"
+  id: "box_icon_skills"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1095.0
+    y: 699.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_bug"
+  id: "box_icon_bugs"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1095.0
+    y: 729.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_item"
+  id: "box_icon_items"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1183.0
+    y: 700.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_restoration"
+  id: "box_icon_restoration"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1183.0
+    y: 729.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_quiz"
+  id: "box_icon_quiz"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 60.0
+    y: 725.0
+  }
+  size {
+    x: 104.0
+    y: 14.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "health_bar_back"
+  pivot: PIVOT_W
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 62.0
+    y: 725.0
+    z: 1.0
+  }
+  size {
+    x: 100.0
+    y: 10.0
+  }
+  color {
+    x: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "health_bar_fill"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 173.0
+    y: 676.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_spray"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 40.0
+    y: 676.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_spray"
+  id: "box_icon_spray"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 60.0
+    y: 676.0
+  }
+  size {
+    x: 104.0
+    y: 14.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "spray_bar_back"
+  pivot: PIVOT_W
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 62.0
+    y: 676.0
+    z: 1.0
+  }
+  size {
+    x: 100.0
+    y: 10.0
+  }
+  color {
+    x: 0.101960786
+    y: 0.2
+    z: 0.6
+  }
+  type: TYPE_BOX
+  id: "spray_bar_fill"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 384.0
+  }
+  size {
+    x: 150.0
+    y: 50.0
+  }
+  type: TYPE_BOX
+  id: "btn_retry_container"
+  inherit_alpha: true
+  visible: false
+}
+nodes {
+  size {
+    x: 200.0
+    y: 60.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_green"
+  id: "btn_retry"
+  parent: "btn_retry_container"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 10.0
+    z: 10.0
+    w: 10.0
+  }
+}
+nodes {
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 500.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "Reintentar"
+  font: "dialogs"
+  id: "text_retry"
+  parent: "btn_retry_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 641.0
+    y: 140.0
+  }
+  scale {
+    x: 0.4
+    y: 0.4
+  }
+  size {
+    x: 2400.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "info"
+  id: "text_alert"
+  line_break: true
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  id: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+  visible: false
+}
+nodes {
+  position {
+    x: 644.0
+    y: 699.0
+  }
+  size {
+    x: 510.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  texture: "gui/speech_bubble_c_dark_3px"
+  id: "box_background_period"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 10.0
+    z: 10.0
+    w: 10.0
+  }
+  alpha: 0.8
+}
+nodes {
+  position {
+    x: 487.0
+    y: 722.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_period_pal"
+  id: "box_icon_period_pal"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 539.0
+    y: 722.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_period_neo"
+  id: "box_icon_period_neo"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 590.0
+    y: 722.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_period_bro"
+  id: "box_icon_period_bro"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 639.0
+    y: 722.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_period_ibe"
+  id: "box_icon_period_ibe"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 692.0
+    y: 722.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_period_rom"
+  id: "box_icon_period_rom"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 446.0
+    y: 694.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_state_exhibition"
+  id: "box_icon_state_exhibition"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 487.0
+    y: 692.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_exhib_pal"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 538.0
+    y: 692.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_exhib_neo"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 589.0
+    y: 692.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_exhib_bro"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 692.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_exhib_ibe"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 691.0
+    y: 692.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_exhib_rom"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 580.0
+    y: 671.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 500.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_period_label"
+  parent: "box_icon_period_container"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  id: "box_icon_state_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+  visible: false
+}
+nodes {
+  position {
+    x: 854.0
+    y: 698.0
+  }
+  scale {
+    x: 1.4
+    y: 1.4
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_state_restoration"
+  id: "box_icon_state"
+  parent: "box_icon_state_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 771.0
+    y: 698.0
+  }
+  type: TYPE_BOX
+  texture: "exhibition_clic/7622"
+  id: "box_icon_state_collectible"
+  parent: "box_icon_state_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 811.0
+    y: 698.0
+  }
+  scale {
+    x: 0.5
+    y: 0.5
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_arrow_right"
+  id: "box_icon_state_arrow"
+  parent: "box_icon_state_container"
+  inherit_alpha: true
+  alpha: 0.8
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 74.0
+    y: 633.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  color {
+    x: 0.5019608
+    y: 0.6
+  }
+  type: TYPE_PIE
+  id: "pie_timer_to_exhibition"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 94.0
+    y: 634.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 1400.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_timer_to_exhibition"
+  pivot: PIVOT_W
+  line_break: true
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 173.0
+    y: 701.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_stamina"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 40.0
+    y: 701.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_stamina"
+  id: "box_icon_stamina"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 60.0
+    y: 701.0
+  }
+  size {
+    x: 104.0
+    y: 14.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "stamina_bar_back"
+  pivot: PIVOT_W
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 62.0
+    y: 701.0
+    z: 1.0
+  }
+  size {
+    x: 100.0
+    y: 10.0
+  }
+  color {
+    x: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "stamina_bar_fill"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 288.0
+    y: 725.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_temperature"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 269.0
+    y: 725.0
+  }
+  size {
+    x: 20.0
+    y: 20.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_temperature"
+  id: "box_icon_temperature"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 288.0
+    y: 701.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_humity"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 269.0
+    y: 701.0
+  }
+  size {
+    x: 20.0
+    y: 20.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_drop"
+  id: "box_icon_humity"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1197.0
+    y: 671.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  size {
+    x: 50.0
+    y: 50.0
+  }
+  type: TYPE_BOX
+  texture: "gui/cat_food_icon_anim"
+  id: "box_icon_cat_food"
+  inherit_alpha: true
+}
+nodes {
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  id: "box_pet_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+  visible: false
+}
+nodes {
+  position {
+    x: 1197.0
+    y: 671.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_cat_pet"
+  id: "box_icon_pet"
+  parent: "box_pet_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1232.0
+    y: 669.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  color {
+    x: 0.5019608
+    y: 0.6
+  }
+  type: TYPE_PIE
+  id: "pie_timer_pet"
+  parent: "box_pet_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 17.0
+    y: 26.0
+  }
+  scale {
+    x: 0.25
+    y: 0.25
+  }
+  size {
+    x: 400.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<FPS>"
+  font: "dialogs"
+  id: "text_fps_debug"
+  pivot: PIVOT_W
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 74.0
+    y: 633.0
+  }
+  size {
+    x: 25.0
+    y: 25.0
+  }
+  color {
+    x: 0.5019608
+    y: 0.6
+  }
+  type: TYPE_PIE
+  id: "pie_timer_to_restoration"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 94.0
+    y: 634.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 1400.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_timer_to_restoration"
+  pivot: PIVOT_W
+  line_break: true
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1096.0
+    y: 670.0
+  }
+  scale {
+    x: 0.45
+    y: 0.45
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_poison_anim"
+  id: "box_icon_poison"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1138.0
+    y: 670.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 180.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<00>"
+  font: "dialogs"
+  id: "text_icon_poison"
+  inherit_alpha: true
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

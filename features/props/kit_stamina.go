@@ -1,0 +1,75 @@
+components {
+  id: "kit_stamina"
+  component: "/features/props/kit_stamina.script"
+}
+components {
+  id: "pick_up"
+  component: "/assets/sounds/pick_up.sound"
+}
+embedded_components {
+  id: "sprite"
+  type: "sprite"
+  data: "default_animation: \"vending_machine\"\n"
+  "material: \"/builtins/materials/sprite.material\"\n"
+  "textures {\n"
+  "  sampler: \"texture_sampler\"\n"
+  "  texture: \"/features/props/props.atlas\"\n"
+  "}\n"
+  ""
+  scale {
+    x: 0.55
+    y: 0.6
+  }
+}
+embedded_components {
+  id: "collisionobject_cursor"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"interactivable\"\n"
+  "mask: \"cursor\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "    id: \"collision_shape\"\n"
+  "  }\n"
+  "  data: 25.0\n"
+  "  data: 37.5\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}
+embedded_components {
+  id: "collisionobject_player"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"walls\"\n"
+  "mask: \"player\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      y: -10.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "  }\n"
+  "  data: 25.0\n"
+  "  data: 27.0\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}

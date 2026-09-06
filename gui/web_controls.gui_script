@@ -1,0 +1,429 @@
+-- gui/web_controls.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 📱 CONTROLES TÁCTILES PARA MÓVIL / HTML5 (web_controls.gui)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+--   GUI de controles táctiles, superpuesta a TODAS las demás
+--   (render order 5) y activa SOLO en dispositivos táctiles.
+--
+--   Fase 0-1 (MOBILE_CONTROLS_PLAN.md):
+--     • Montaje: render order 5 + cache de nodos.
+--     • Activación: polling de platform.is_detected()/is_touch()
+--       en update() — la detección HTML5 es ASÍNCRONA — con
+--       timeout de ~2s para degradar a escritorio (permanecer oculto).
+--     • Visibilidad solo en gameplay: scene_manager envía
+--       "mobile_controls { active = true/false }" según la escena.
+--
+--   Fases 2-4 (mismo archivo):
+--     • D-pad  → input_event {up/down/left/right} al player   ✅ Fase 2
+--     • spray  → mensaje "mobile_spray" al player_spray      ✅ Fase 3
+--     • option → mensaje "mobile_interact" al objetivo cercano ✅ Fase 4
+--     • pause  → mensaje "request_pause" al menú de pausa (igual que P)  ✅ Fase 6
+--
+--   Fase 6 (pausa): el menú de pausa (render order 4) avisa con
+--   "pause_state {active}" para que estos controles (render order 5) se
+--   oculten mientras está abierto y no queden flotando encima.
+--
+--   Fase 7 (biblioteca): library.gui_script avisa con "library_state {active}"
+--   para ocultarlos mientras se lee un libro (render order 5 > 3: flotarían
+--   encima del libro y no aplican durante la lectura).
+--
+--   El input llega vía forwarding de scene_manager (input_event),
+--   NO por on_input directo: así se heredan gratis los guards de
+--   pausa y de escena (ver arquitectura en MOBILE_CONTROLS_PLAN.md).
+--   Cuando el juego está pausado, scene_manager corta el forwarding →
+--   este script no recibe touch → no publica nada al player.
+
+local config = require "main.config"
+local platform = require "main.platform"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_CONTROLS = false
+local dprint = config.make_log(DEBUG_CONTROLS)
+
+-- Tiempo de espera (s) tras el cual se loguea un aviso si la detección
+-- HTML5 aún no ha llegado. NO se degrada permanentemente: si la detección
+-- llega tarde (p. ej. platform.detect() invocado más tarde), la GUI se
+-- activa igualmente. La detección real se hace en scene_manager (bootstrap).
+local DETECT_TIMEOUT = 2.0
+
+-- Nodos de la GUI (web_controls.gui). btn_center se cachea aunque
+-- no sea pulsable: servirá para feedback visual del joystick.
+local NODE_IDS = {
+	"joystick",
+	"btn_up",
+	"btn_down",
+	"btn_left",
+	"btn_right",
+	"btn_center",
+	"btn_spray",
+	"btn_option",
+	"btn_pause",
+}
+
+-- ═══════════════════════════════════════════════════════
+-- FASE 2 — D-PAD → MOVIMIENTO
+-- ═══════════════════════════════════════════════════════
+--   Reutiliza el contrato de input del player: se publica el MISMO
+--   input_event que reenvía scene_manager ({action_id, value}).
+--   player.handle_input aplica los signos (up→+y, down→-y, left→-x,
+--   right→+x) y hereda gratis todos los gates: muerto, diálogo, muros,
+--   agotamiento. CERO cambios en player.script.
+--
+--   Captura por touch_id: cuando un dedo presiona un botón, queda
+--   asignado a ese botón hasta que se levante (evita temblor en bordes
+--   y permite diagonales: up+left con dos dedos o un dedo deslizado).
+
+local DPAD_BUTTONS = { "btn_up", "btn_down", "btn_left", "btn_right" }
+
+local BUTTON_ACTION = {
+	btn_up    = hash("up"),
+	btn_down  = hash("down"),
+	btn_left  = hash("left"),
+	btn_right = hash("right"),
+}
+
+-- URL del player (mismo contrato que scene_manager → player).
+local PLAYER_URL = "level_01:/player#player"
+
+-- 📱 URL del sensor de interacción (Fase 4): componente del player GO
+--    que detecta el interactable más cercano y resalta el objetivo.
+local INTERACT_URL = "level_01:/player#player_interact"
+
+-- 🧴 URL del disparo de spray (Fase 3): componente player_spray del player
+--    GO (mismo patrón de fragmento verificado en scene_manager.script).
+local SPRAY_URL = "level_01:/player#player_spray"
+
+-- ⏸ URL del menú de pausa (Fase 6): bootstrap:/gui_library#pause (componente
+--    "pause" del GO gui_library, verificado en bootstrap.collection). Misma
+--    acción que la tecla P: solo ACTIVA la pausa (reanudar se hace desde el
+--    menú, cuyo botón Reanudar ya acepta toques vía single-touch).
+local PAUSE_URL = "bootstrap:/gui_library#pause"
+
+-- Resetea el estado del D-pad al ocultar los controles (escena o
+-- plataforma): evita que un botón quede "pulsado" en self.dpad si el
+-- dedo se levantó mientras no había forwarding (p. ej. al volver a la
+-- intro). Si había botones pulsados, emite value=0 para que el player
+-- detenga cualquier movimiento en curso.
+local function reset_dpad(self)
+	for _, btn_id in ipairs(DPAD_BUTTONS) do
+		if self.dpad[btn_id] then
+			self.dpad[btn_id] = false
+			msg.post(PLAYER_URL, "input_event", {
+				action_id = BUTTON_ACTION[btn_id],
+				value     = 0,
+			})
+		end
+	end
+
+	-- 🧴 Fase 3: si un dedo tenía capturado el botón spray (disparando),
+	--    soltarlo al ocultar los controles (volver a intro / cambio de
+	--    escena): evita que el spray quede disparando para siempre.
+	for touch_id, btn in pairs(self.touch_button) do
+		if btn == "btn_spray" then
+			msg.post(SPRAY_URL, "mobile_spray", { pressed = false })
+			dprint("[web_controls] reset: btn_spray → mobile_spray OFF")
+		end
+	end
+	self.touch_button = {}
+end
+
+-- Procesa un frame de multi-touch: captura/release de botones del
+-- D-pad y publica input_event al player.
+-- touches = tabla 1..N de puntos activos (action.touch), con campos
+-- id/x/y/pressed/released (manual oficial: llega CADA frame con TODOS
+-- los puntos activos).
+--
+-- Publicación (semántica de TECLADO): el player resetea direction al
+-- final de cada update() (reset_movement_state), igual que un key_trigger
+-- envía value=1 continuamente mientras la tecla está pulsada. Por eso:
+--   • Transición prensa/suelta → value 1/0 (una vez).
+--   • Botón MANTENIDO (sin cambio) → se re-envía value=1 CADA frame.
+-- Sin esta re-alimentación, el jugador solo se movería a ráfagas.
+local function process_touch(self, touches)
+	-- Índice de touch ids activos en este frame
+	local active = {}
+	for _, td in ipairs(touches) do
+		active[td.id] = td
+	end
+
+	-- Prensados: capturar un botón libre del D-pad (o el botón spray)
+	for _, td in ipairs(touches) do
+		if td.pressed and not self.touch_button[td.id] then
+			for _, btn_id in ipairs(DPAD_BUTTONS) do
+				local node = self.nodes[btn_id]
+				if node and gui.pick_node(node, td.x, td.y) then
+					self.touch_button[td.id] = btn_id
+					break
+				end
+			end
+
+			-- 🧴 Fase 3 — BOTÓN SPRAY: si el dedo no cayó en el D-pad y toca
+			--    btn_spray, se captura (contrato MANTENIDO: dispara mientras
+			--    el dedo está sobre él; el release se detecta por touch_id,
+			--    no por la posición — aunque el dedo se deslice fuera del
+			--    botón, soltar siempre corta el spray).
+			if not self.touch_button[td.id] then
+				local spray = self.nodes["btn_spray"]
+				if spray and gui.pick_node(spray, td.x, td.y) then
+					self.touch_button[td.id] = "btn_spray"
+					msg.post(SPRAY_URL, "mobile_spray", { pressed = true })
+					dprint("[web_controls] btn_spray → mobile_spray ON")
+				end
+			end
+		end
+	end
+
+	-- 🅾️⏸ Fases 4/6 — BOTONES OPTION ("tecla E") y PAUSE (igual que la tecla P):
+	--    disparos únicos, no capturados en touch_button. El botón pause solo
+	--    ACTIVA la pausa; el menú de pausa se encarga del resto (y al abrirse
+	--    oculta estos controles vía pause_state). Mientras esté abierto, el
+	--    forwarding de input está cortado → no hay riesgo de re-disparo.
+	for _, td in ipairs(touches) do
+		if td.pressed then
+			local opt = self.nodes["btn_option"]
+			if opt and gui.pick_node(opt, td.x, td.y) then
+				msg.post(INTERACT_URL, "mobile_interact", { pressed = true })
+				dprint("[web_controls] btn_option → mobile_interact")
+			end
+
+			local pause_btn = self.nodes["btn_pause"]
+			if pause_btn and gui.pick_node(pause_btn, td.x, td.y) then
+				msg.post(PAUSE_URL, "request_pause")
+				dprint("[web_controls] btn_pause → request_pause")
+			end
+		end
+	end
+
+	-- Releases: dedos levantados (o ya inexistentes en este frame)
+	-- liberan su botón. Esto también cubre releases perdidos durante
+	-- una pausa (el dedo se soltó mientras no había forwarding).
+	for touch_id, _ in pairs(self.touch_button) do
+		local td = active[touch_id]
+		if not td or td.released then
+			-- 🧴 Fase 3: al soltar el dedo que tenía capturado el spray,
+			--    cortar el disparo (mobile_spray {pressed=false}).
+			if self.touch_button[touch_id] == "btn_spray" then
+				msg.post(SPRAY_URL, "mobile_spray", { pressed = false })
+				dprint("[web_controls] btn_spray → mobile_spray OFF")
+			end
+			self.touch_button[touch_id] = nil
+		end
+	end
+
+	-- Recalcular estado del D-pad y publicar:
+	--   • Transición (prensa/suelta) → value 1/0.
+	--   • Mantenido (sin cambio) → re-enviar value=1 cada frame:
+	--     el player resetea direction al final de cada update(), así que
+	--     sin esta re-alimentación solo se movería a ráfagas (bug real
+	--     detectado en pruebas con el móvil).
+	for _, btn_id in ipairs(DPAD_BUTTONS) do
+		local pressed = false
+		for _, owner_btn in pairs(self.touch_button) do
+			if owner_btn == btn_id then pressed = true break end
+		end
+		if pressed ~= self.dpad[btn_id] then
+			self.dpad[btn_id] = pressed
+			msg.post(PLAYER_URL, "input_event", {
+				action_id = BUTTON_ACTION[btn_id],
+				value     = pressed and 1 or 0,
+			})
+			dprint("[web_controls] D-pad " .. btn_id .. " → " .. (pressed and "1" or "0"))
+		elseif pressed then
+			-- Mantenido: re-alimentar cada frame (mismo contrato que el teclado)
+			msg.post(PLAYER_URL, "input_event", {
+				action_id = BUTTON_ACTION[btn_id],
+				value     = 1,
+			})
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- VISIBILIDAD
+-- ═══════════════════════════════════════════════════════
+
+-- Habilita/deshabilita TODOS los nodos de control explícitamente.
+-- ⚠️ GOTCHA #10: gui.pick_node es GEOMÉTRICO — detecta nodos deshabilitados
+--    e invisibles. Por eso, además del gate self.visible en on_message, se
+--    deshabilitan los nodos al ocultar (y se habilitan al mostrar): doble
+--    barrera para que ningún toque fantasma llegue a process_touch.
+local function set_controls_enabled(self, enabled)
+	for _, id in ipairs(NODE_IDS) do
+		local node = self.nodes[id]
+		if node then
+			gui.set_enabled(node, enabled)
+		end
+	end
+end
+
+-- Aplica la visibilidad efectiva = (táctil detectado) Y (en gameplay).
+-- Solo toca los nodos cuando el estado cambia (update on change, regla #5).
+local function apply_visibility(self)
+	-- Visibilidad efectiva = (táctil) Y (gameplay) Y (menú de pausa cerrado)
+	-- Y (quiz cerrado) Y (biblioteca cerrada). Durante un quiz o la lectura
+	-- de un libro los controles se ocultan (no aplican y flotarían encima).
+	local visible = self.touch_active and self.scene_active and not self.pause_active and not self.quiz_active and not self.library_active
+	if visible ~= self.visible then
+		self.visible = visible
+		set_controls_enabled(self, visible)
+		dprint("[web_controls] " .. (visible and "Mostrando controles" or "Ocultando controles"))
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- INIT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima):
+	-- web_controls=5 > pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+	gui.set_render_order(5)
+
+	-- Cache de nodos
+	self.nodes = {}
+	for _, id in ipairs(NODE_IDS) do
+		self.nodes[id] = gui.get_node(id)
+	end
+
+	-- Estado de activación
+	self.touch_active   = false   -- dispositivo táctil confirmado
+	self.scene_active   = false   -- escena de gameplay activa (level_01)
+	self.pause_active   = false   -- menú de pausa abierto (oculta los controles)
+	self.quiz_active    = false   -- quiz abierto (oculta los controles: el joystick
+	                             --   capturaría los toques sobre las respuestas)
+	self.library_active = false   -- biblioteca abierta (oculta los controles durante la lectura)
+	self.visible        = false   -- visibilidad efectiva de la GUI
+	self.waiting_detect = true    -- polling de detección HTML5 en marcha
+	self.detect_timer   = 0
+
+	-- Estado del D-pad (Fase 2): botones del joystick + captura por dedo.
+	-- ⚠️ Claves = ids de nodo (btn_up...) para coincidir con DPAD_BUTTONS:
+	--    process_touch y reset_dpad iteran sobre esos ids.
+	self.dpad = {
+		btn_up    = false,
+		btn_down  = false,
+		btn_left  = false,
+		btn_right = false,
+	}
+	self.touch_button = {}   -- touch_id → botón capturado
+
+	-- 🔒 Deshabilitado por defecto: la GUI no debe flotar sobre la intro
+	--    ni aparecer en escritorio. El nodo "joystick" ya nace visible:false
+	--    en el .gui; se apagan también los botones raíz (btn_spray/btn_option).
+	set_controls_enabled(self, false)
+
+	dprint("[web_controls] Init (oculto). Esperando detección de plataforma...")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- UPDATE — POLLING DE DETECCIÓN HTML5
+-- ═══════════════════════════════════════════════════════
+--   platform.detect() se invoca en scene_manager.script:init() (bootstrap,
+--   al arrancar el juego). Con el fix de platform.lua la detección es
+--   SÍNCRONA (html5.run() devuelve el resultado), pero el polling sigue
+--   como red de seguridad por si este script se inicializa antes que
+--   scene_manager (orden de init no garantizado en la colección).
+--   ⚠️ NO se degrada a escritorio tras el timeout: si la detección llega
+--   tarde, la GUI se activa igualmente (el chequeo por frame es trivial).
+
+function update(self, dt)
+	if not self.waiting_detect then return end
+
+	if platform.is_detected() then
+		self.waiting_detect = false
+		self.touch_active = platform.is_touch()
+		dprint("[web_controls] Detección completada: touch=" .. tostring(self.touch_active))
+		apply_visibility(self)
+	else
+		self.detect_timer = self.detect_timer + dt
+		if self.detect_timer >= DETECT_TIMEOUT then
+			-- Solo aviso: se sigue esperando la detección en frames posteriores
+			dprint("[web_controls] Sin detección tras " .. DETECT_TIMEOUT .. "s (esperando...)")
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- scene_manager notifica la escena activa (gameplay vs intro):
+	--   level_01 → active = true (controles visibles si hay táctil)
+	--   intro    → active = false
+	if message_id == hash("mobile_controls") then
+		self.scene_active = message.active == true
+		-- Al ocultar (volver a intro / pausa de escena), resetear el D-pad
+		-- para no arrastrar botones "pulsados" a la siguiente entrada.
+		if not message.active then
+			reset_dpad(self)
+		end
+		apply_visibility(self)
+		return
+	end
+
+	-- ⏸ Fase 6 — El menú de pausa avisa al abrirse/cerrarse (pause_state):
+	--    ocultar los controles táctiles mientras el menú esté abierto (render
+	--    order 5 > 4: quedarían flotando encima). Al ocultar se resetea el
+	--    D-pad por si un dedo quedó en el aire cuando se cortó el forwarding.
+	if message_id == hash("pause_state") then
+		local paused = message.active == true
+		if paused ~= self.pause_active then
+			self.pause_active = paused
+			if paused then
+				reset_dpad(self)
+			end
+			apply_visibility(self)
+		end
+		return
+	end
+
+	-- 📝 Fase 6 — El quiz (interactive.gui_script) avisa al abrirse/cerrarse
+	--    (quiz_state): ocultar los controles táctiles mientras el quiz esté
+	--    abierto. El joystick (abajo-izquierda) solapa con los botones de
+	--    respuesta del quiz (mismo lado) y capturaría los toques; además los
+	--    controles flotarían encima (render order 5 > 1). Mismo patrón que
+	--    pause_state: reset del D-pad al ocultar.
+	if message_id == hash("quiz_state") then
+		local quiz_open = message.active == true
+		if quiz_open ~= self.quiz_active then
+			self.quiz_active = quiz_open
+			if quiz_open then
+				reset_dpad(self)
+			end
+			apply_visibility(self)
+		end
+		return
+	end
+
+	-- 📖 Fase 7 — La biblioteca (library.gui_script) avisa al abrirse/cerrarse
+	--    (library_state): ocultar los controles táctiles mientras se lee un
+	--    libro (no aplican y flotarían encima, render order 5 > 3). Mismo
+	--    patrón que pause_state/quiz_state: reset del D-pad al ocultar.
+	if message_id == hash("library_state") then
+		local library_open = message.active == true
+		if library_open ~= self.library_active then
+			self.library_active = library_open
+			if library_open then
+				reset_dpad(self)
+			end
+			apply_visibility(self)
+		end
+		return
+	end
+
+	-- input_event (forwarding de scene_manager): procesar el multi-touch
+	-- del D-pad. Solo cuando la GUI es visible (táctil + gameplay); si no,
+	-- se ignoran los toques (nodos deshabilitados → pick_node falla igual).
+	if message_id == hash("input_event") then
+		if self.visible and message.action_id == hash("touch_multi") and message.touch then
+			process_touch(self, message.touch)
+		end
+	end
+end

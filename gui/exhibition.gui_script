@@ -1,0 +1,285 @@
+-- gui/exhibition.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 🏛️ GUI DE EXHIBICIÓN — FICHA DEL OBJETO
+-- ═══════════════════════════════════════════════════════
+--
+--   Panel de información del objeto seleccionado: auto-size
+--   del globo de texto (400 uu), imagen de referencia y
+--   cierre. Posiciona la ficha junto al objeto en pantalla.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "exhibition_closed" (hacia exhibition_manager)
+--   Mensajes que RECIBE (on_message):
+--     ← "display_gui_info"/"update_position"/"close_info"
+--     ← "input_event" (cierre)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-21
+-- ═══════════════════════════════════════════════════════
+
+local text_loader = require "main.text_loader"
+local game_state = require "main.game_state"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_EXHIBITION_GUI = false
+local dprint = config.make_log(DEBUG_EXHIBITION_GUI)
+
+-- ============================================
+-- 📋 AUTO_SIZE EXHIBITION
+-- ============================================
+-- 📏 Ago 2026: el globo de texto es MÁS ANCHO para aprovechar el espacio
+-- horizontal (400 uu visuales de texto vs 280 antes). La imagen (box_image)
+-- ya NO es hija del contenedor: quedó fijada bajo el panel de habilidades del
+-- HUD (box_background_player_b) como nodo raíz, así el texto puede crecer sin
+-- chocar con ella (ver exhibition.gui).
+local function auto_size_exhibition(bg_node, text_node, complete_text)
+	local ORIGINAL_TEXT_WIDTH = 2000
+	local TEXT_SCALE = 0.2
+	local FIXED_BG_WIDTH = 420
+
+	local font_name = gui.get_font(text_node)
+	local font = gui.get_font_resource(font_name)
+
+	gui.set_line_break(text_node, true)
+	gui.set_size(text_node, vmath.vector3(ORIGINAL_TEXT_WIDTH, 0, 0))
+
+	local metrics = resource.get_text_metrics(font, complete_text, { width = ORIGINAL_TEXT_WIDTH, line_break = true })
+	local node_text_height = metrics.height
+	local visual_text_height = node_text_height * TEXT_SCALE
+
+	local padding_top = 12
+	local padding_bottom = 12
+	local padding_y = padding_top + padding_bottom
+
+	local target_bg_height = visual_text_height + padding_y
+
+	local MIN_HEIGHT = 40
+	if target_bg_height < MIN_HEIGHT then
+		target_bg_height = MIN_HEIGHT
+		visual_text_height = MIN_HEIGHT - padding_y
+		node_text_height = visual_text_height / TEXT_SCALE
+	end
+
+	gui.set_size(bg_node, vmath.vector3(FIXED_BG_WIDTH, target_bg_height, 0))
+	gui.set_size(text_node, vmath.vector3(ORIGINAL_TEXT_WIDTH, node_text_height, 0))
+
+	local text_pos = gui.get_position(text_node)
+	text_pos.x = 0  
+	text_pos.y = target_bg_height - padding_top  
+	gui.set_position(text_node, text_pos)
+
+	return target_bg_height
+end
+
+-- ============================================
+-- 🖼️ REPOSICIONAMIENTO DE LA IMAGEN
+-- ============================================
+-- 📏 Ago 2026: coloca box_image a izquierda o derecha según la posición
+--    del globo de texto en el eje X. Evita solape con el texto.
+--    Posiciones relativas al tamaño de ventana para adaptarse a resize
+--    y diferentes resoluciones (desktop, HTML5, móvil).
+local function reposition_image(self, bubble_screen_x)
+	local ww, wh = window.get_size()
+	if ww == 0 or wh == 0 then return end
+
+	-- Posiciones relativas (% del ancho/alto de ventana)
+	local IMAGE_X_RIGHT = ww * 0.84   -- ≈1083 en 1280
+	local IMAGE_X_LEFT  = ww * 0.16   -- ≈210 en 1280
+	local IMAGE_Y       = wh * 0.66   -- ≈509 en 768
+
+	-- Centro de pantalla: si el globo está a la derecha → imagen a la izquierda
+	local half_w = ww * 0.5
+	local img_x = (bubble_screen_x > half_w) and IMAGE_X_LEFT or IMAGE_X_RIGHT
+
+	gui.set_screen_position(self.box_image, vmath.vector3(img_x, IMAGE_Y, 0))
+end
+
+-- ============================================
+-- FUNCIONES DE CONTROL
+-- ============================================
+
+local function close_panel(self)
+	if not self.is_panel_open then return end
+
+	self.is_panel_open = false
+	self.follow_object = false
+	self.current_object_id = nil
+
+	gui.set_enabled(self.box_root, false)
+	gui.set_enabled(self.box_image, false)  -- 📏 Ago 2026: imagen fija bajo el HUD (nodo raíz, ya no hereda del contenedor)
+	msg.post(".", "release_input_focus")
+
+	msg.post("/game_manager#exhibition_manager", "exhibition_closed", {})
+	dprint("🔒 [GUI Exhibition] Panel cerrado.")
+end
+
+-- ============================================
+-- 📝 RENDER DE LA FICHA (etiquetas LOCALIZADAS, GOTCHA #1: definida ANTES de on_message)
+-- ============================================
+-- Construye el texto del panel con las etiquetas de general_text → M.exhibition
+-- (antes hardcodeadas en español). Los campos description/period/site/dimensions
+-- ya llegan localizados desde exhibition_text_[lan].lua (exhibition_manager).
+local function render_info_text(self, matched_object)
+	local labels = self.exhibition_labels or {}
+	local info_text = (labels.label_object or "Objeto #") .. tostring(matched_object.id) .. "\n\n"
+	if matched_object.description then
+		info_text = info_text .. (labels.label_description or "Descripción: ") .. matched_object.description .. "\n"
+	end
+	if matched_object.period then
+		info_text = info_text .. (labels.label_period or "Periodo: ") .. matched_object.period .. "\n"
+	end
+	if matched_object.site then
+		info_text = info_text .. (labels.label_site or "Yacimiento: ") .. matched_object.site .. "\n"
+	end
+
+	if matched_object.dimensions and matched_object.dimensions ~= "" then
+		info_text = info_text .. (labels.label_dimensions or "Dimensiones: ") .. matched_object.dimensions
+	else
+		info_text = info_text .. (labels.no_dimensions or "Dimensiones: No constan")
+	end
+
+	gui.set_text(self.text_exhibition, info_text)
+
+
+	auto_size_exhibition(
+		self.box_exhibition,
+		self.text_exhibition,
+		info_text
+	)
+end
+
+-- ============================================
+-- INIT
+-- ============================================
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima):
+	-- pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+	gui.set_render_order(2)
+
+	self.box_root = gui.get_node("box_exhibition_container")
+	self.box_image = gui.get_node("box_image")
+	self.text_exhibition = gui.get_node("text_exhibition")
+	self.box_exhibition = gui.get_node("box_exhibition")
+
+	self.is_panel_open = false
+	self.follow_object = false
+	self.current_object_id = nil
+	self.last_matched_object = nil  -- 📝 Para re-renderizar el panel si cambia el idioma estando abierto
+	self.last_bubble_x = nil       -- 📏 Ago 2026: última posición X del globo (para repositionar imagen)
+
+	-- 🌐 Etiquetas del panel localizadas (general_text → M.exhibition). Los
+	--    campos description/period/site/dimensions vienen ya localizados en
+	--    exhibition_text_[lan].lua (cargado por exhibition_manager).
+	self.general_texts = text_loader.load("general") or {}
+	self.exhibition_labels = self.general_texts.exhibition or {}
+
+	-- GOTCHA #34: el callback de game_state NO puede tocar gui (se ejecuta
+	-- en el stack del llamador, escena GUI equivocada). Solo postea un
+	-- mensaje a sí mismo; on_message corre en la escena correcta.
+	self.self_url = msg.url()
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.general_texts = text_loader.reload("general", new_lang) or {}
+		self.exhibition_labels = self.general_texts.exhibition or {}
+		msg.post(self.self_url, "language_changed")
+	end)
+
+	gui.set_enabled(self.box_root, false)
+	gui.set_enabled(self.box_image, false)  -- 📏 Ago 2026: imagen fija bajo el HUD (defensa en profundidad)
+end
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	if not self.is_panel_open then
+		return
+	end
+
+	if action_id == hash("key_esc") and action.pressed then
+		close_panel(self)
+		return
+	end
+
+	if action_id == hash("click") and action.pressed then
+		close_panel(self)
+	end
+end
+
+-- ============================================
+-- MESSAGES
+-- ============================================
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	if message_id == hash("display_gui_info") then
+		local matched_object = message.item
+		local screen_pos = message.screen_pos
+
+		if matched_object and screen_pos then
+			self.last_matched_object = matched_object  -- 📝 para re-render en language_changed
+			render_info_text(self, matched_object)
+
+			local anim_name = (matched_object.image and matched_object.image ~= "") 
+			and matched_object.image 
+			or tostring(matched_object.id)
+			gui.play_flipbook(self.box_image, hash(anim_name))
+			gui.set_enabled(self.box_image, true)  -- 📏 Ago 2026: imagen fija bajo el HUD, visible solo con panel abierto
+
+			-- 🖥️ GOTCHA resize: screen_pos viene en screen space (píxeles de ventana).
+			-- gui.set_screen_position convierte a local con el adjust mode y el tamaño de
+			-- ventana ACTUALES (robusto a resize/fullscreen). NO usar gui.set_position.
+			gui.set_screen_position(self.box_root, screen_pos)
+
+			-- 📏 Ago 2026: reposicionar imagen según posición del globo
+			self.last_bubble_x = screen_pos.x
+			reposition_image(self, screen_pos.x)
+
+			self.is_panel_open = true
+			self.follow_object = true
+			self.current_object_id = matched_object.id
+			gui.set_enabled(self.box_root, true)
+			msg.post(".", "acquire_input_focus")
+
+			dprint("✅ [GUI Exhibition] Panel mostrado para: " .. tostring(matched_object.id))
+		end
+
+	elseif message_id == hash("language_changed") then
+		-- 🌐 GOTCHA #34: el callback de idioma solo postea este mensaje; aquí,
+		-- en la escena GUI correcta, se re-renderiza el panel si está abierto.
+		if self.is_panel_open and self.last_matched_object then
+			render_info_text(self, self.last_matched_object)
+			-- Reposicionar imagen tras re-render (el tamaño del globo puede cambiar)
+			if self.last_bubble_x then
+				reposition_image(self, self.last_bubble_x)
+			end
+		end
+
+	elseif message_id == hash("update_position") then
+	if self.is_panel_open and self.follow_object and message.screen_pos then
+		-- 🖥️ GOTCHA resize: ver display_gui_info. Reconvertimos en cada update_position
+		-- con el tamaño de ventana actual, así el panel se auto-corrige tras un resize.
+		gui.set_screen_position(self.box_root, message.screen_pos)
+		-- 📏 Ago 2026: reposicionar imagen en cada update (objeto puede moverse)
+		self.last_bubble_x = message.screen_pos.x
+		reposition_image(self, message.screen_pos.x)
+	end
+
+elseif message_id == hash("close_info") then
+	close_panel(self)
+end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end

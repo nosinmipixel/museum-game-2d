@@ -1,0 +1,258 @@
+-- features/props/car.script
+-- ═══════════════════════════════════════════════════════
+-- 🚗 SISTEMA DE COCHE - COMPORTAMIENTO
+-- ═══════════════════════════════════════════════════════
+--
+--   Movimiento en Y entre car_start_point y car_end_point.
+--   Si detecta al jugador u otro coche delante (collisionobject_player_brake,
+--   TRIGGER, mask player+car), frena. Si atropella al jugador
+--   (collisionobject_player, KINEMATIC), el jugador muere.
+--
+--   Estados: MOVING, BRAKING, HONKING, CRASHED
+--
+--   🎨 El aspecto del coche se elige aleatoriamente en init()
+--   activando uno de los sprites (sprite_01, sprite_02, sprite_03).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_CAR = false
+local dprint = config.make_log(DEBUG_CAR)
+
+-- ═══════════════════════════════════════════════════════
+-- ⚙️ CONFIGURACIÓN
+-- ═══════════════════════════════════════════════════════
+
+local CAR_SPEED = 200           -- velocidad en px/s
+local BRAKE_DECEL = 400         -- deceleración al frenar (px/s²)
+local HONK_DURATION = 1.5       -- (reservado para futuro uso con timer de claxon)
+local MIN_SPEED_THRESHOLD = 10  -- umbral de velocidad para considerar detenido
+local DAMAGE = 100              -- daño al atropellar (muerte instantánea)
+
+-- 🎨 Sprites disponibles (elegido pseudo-aleatoriamente en init)
+-- Cada sprite tiene embebido un atlas distinto en car.go.
+-- No usamos math.random() para no interferir con otros scripts (shared_state=1).
+local spawn_count = 0  -- contador de instancias (rompe el patrón del intervalo fijo 1.5s)
+local CAR_SPRITES = {
+	"#sprite_01",
+	"#sprite_02",
+	"#sprite_03",
+}
+
+-- ═══════════════════════════════════════════════════════
+-- 🔧 HELPERS DE AUDIO SEGURO
+-- ═══════════════════════════════════════════════════════
+
+local function safe_sound_play(url)
+	pcall(function() sound.play(url) end)
+end
+
+local function safe_sound_stop(url)
+	pcall(function() sound.stop(url) end)
+end
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	-- Estado inicial
+	self.state = "MOVING"
+	self.speed = CAR_SPEED
+	self.brake_active = false
+	self.player_url = msg.url("/player")
+
+	-- Zero-garbage (§1): vector pre-asignado para el hot path de update()
+	self.tmp_pos = vmath.vector3()
+
+	-- Obtener posiciones de start y end
+	-- Se pasan como propiedades desde el factory o se buscan en la escena
+	self.start_pos = go.get_position()
+	self.end_pos = nil
+
+	-- Leer end_pos desde el GO car_end_point (embedded instance en la colección)
+	local end_url = msg.url("/car_end_point")
+	local ok, end_pos = pcall(go.get_position, end_url)
+	if ok then
+		self.end_pos = vmath.vector3(end_pos.x, end_pos.y, self.start_pos.z)
+	else
+		-- Fallback: 2000 píxeles hacia arriba desde el start
+		self.end_pos = vmath.vector3(self.start_pos.x, self.start_pos.y + 2000, self.start_pos.z)
+	end
+
+	-- 🎨 Seleccionar sprite pseudo-aleatorio sin usar math.random()
+	-- (para no interferir con otros scripts en shared_state=1)
+	-- contador * primo + ms evita que el intervalo fijo (1500ms) dé el mismo módulo
+	spawn_count = spawn_count + 1
+	local idx = ((spawn_count * 7 + math.floor(os.clock() * 1000)) % #CAR_SPRITES) + 1
+	self.active_sprite = CAR_SPRITES[idx]
+	for i, spr in ipairs(CAR_SPRITES) do
+		if i == idx then
+			msg.post(spr, "enable")   -- asegurar visible
+		else
+			msg.post(spr, "disable")  -- ocultar los demás
+		end
+	end
+	dprint("[CAR] Sprite activo: " .. self.active_sprite)
+
+	-- Iniciar animación y sonido del motor
+	pcall(function()			sprite.play_flipbook(self.active_sprite, hash("car_running"))
+	end)
+	safe_sound_play("#car_engine")
+
+	dprint("[CAR] Inicializado. Start: " .. tostring(self.start_pos) .. " End: " .. tostring(self.end_pos))
+end
+
+function final(self)
+	-- Parar sonidos al destruir
+	safe_sound_stop("#car_engine")
+	safe_sound_stop("#car_horn_honking")
+
+	-- Notificar al spawn point para mantener el contador de activos
+	pcall(function()
+		msg.post("/car_start_point", "car_destroyed")
+	end)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔄 UPDATE
+-- ═══════════════════════════════════════════════════════
+
+function update(self, dt)
+	if self.state == "CRASHED" then
+		return
+	end
+
+	local my_pos = go.get_position()
+
+	-- ═══════════════════════════════════════
+	-- ESTADO: MOVING (avance normal hacia end)
+	-- ═══════════════════════════════════════
+	if self.state == "MOVING" then
+		self.speed = CAR_SPEED
+
+		-- Calcular nueva posición (mutar vector pre-asignado — §1)
+		local new_y = my_pos.y + self.speed * dt
+		local new_pos = self.tmp_pos
+
+		-- ¿Alcanzó el end_point?
+		if new_y >= self.end_pos.y then
+			-- Llegó al final: volver al start
+			new_pos.x = self.start_pos.x
+			new_pos.y = self.start_pos.y
+			new_pos.z = self.start_pos.z
+			-- Breve sonido de motor al reiniciar
+			safe_sound_play("#car_engine")
+			dprint("[CAR] Ciclo completado, volviendo a start")
+		else
+			new_pos.x = my_pos.x
+			new_pos.y = new_y
+			new_pos.z = my_pos.z
+		end
+
+		go.set_position(new_pos)
+
+	-- ═══════════════════════════════════════
+	-- ESTADO: BRAKING (frenando)
+	-- ═══════════════════════════════════════
+	elseif self.state == "BRAKING" then
+		-- Si el obstáculo desapareció (ej: jugador murió y se teletransportó),
+		-- volver a MOVING sin necesidad de frenar hasta 0
+		if not self.brake_active then
+			self.state = "MOVING"
+			self.speed = CAR_SPEED
+			-- El sonido del motor sigue activo (no se paró en BRAKING)
+			pcall(function() sprite.play_flipbook(self.active_sprite, hash("car_running")) end)
+			dprint("[CAR] Obstáculo desapareció, reanudando marcha")
+			return
+		end
+
+		-- Decelerar
+		self.speed = math.max(0, self.speed - BRAKE_DECEL * dt)
+		local new_y = my_pos.y + self.speed * dt
+		local new_pos = self.tmp_pos
+		new_pos.x = my_pos.x
+		new_pos.y = new_y
+		new_pos.z = my_pos.z
+		go.set_position(new_pos)
+
+		-- ¿Se detuvo completamente? → empezar a tocar el claxon (jugador delante)
+		if self.speed <= MIN_SPEED_THRESHOLD then
+			self.speed = 0
+			self.state = "HONKING"
+			safe_sound_stop("#car_engine")
+			safe_sound_play("#car_horn_honking")
+			pcall(function()			sprite.play_flipbook(self.active_sprite, hash("car_idle")) end)
+			dprint("[CAR] Detenido, tocando claxon")
+		end
+
+	-- ═══════════════════════════════════════
+	-- ESTADO: HONKING (parado, jugador delante, sonando claxon)
+	-- ═══════════════════════════════════════
+	elseif self.state == "HONKING" then
+		-- Jugador se fue → dejar de tocar claxon y reanudar marcha
+		if not self.brake_active then
+			safe_sound_stop("#car_horn_honking")
+			self.state = "MOVING"
+			self.speed = CAR_SPEED
+			pcall(function() sprite.play_flipbook(self.active_sprite, hash("car_running")) end)
+			safe_sound_play("#car_engine")
+			dprint("[CAR] Jugador se fue, reanudando marcha")
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES (colisiones y triggers)
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if self.state == "CRASHED" then return end
+
+	-- 🎯 TRIGGER: collisionobject_player_brake (es TRIGGER, grupo walls, mask player+car)
+	-- Detecta tanto al jugador (grupo player) como a otros coches (grupo car)
+	-- Ignora self-triggering (el coche detectándose a sí mismo)
+	if message_id == hash("trigger_response") then
+		-- Ignorar detección de nuestros propios collision objects
+		if message.other_id == go.get_id() then return end
+
+		if message.other_group == hash("player") or message.other_group == hash("car") then
+			self.brake_active = message.enter
+
+			if message.enter and self.state == "MOVING" then
+				local what = message.other_group == hash("player") and "Jugador" or "Coche"
+				self.state = "BRAKING"
+				safe_sound_play("#car_braking")
+				dprint("[CAR] ¡Frenando! " .. what .. " detectado delante")
+			end
+		end
+
+	-- 💥 COLISIÓN: collisionobject_player (es KINEMATIC, grupo walls)
+	elseif message_id == hash("contact_point_response") then
+		if message.group == hash("player") then
+			-- El coche ha alcanzado al jugador
+			self.state = "CRASHED"
+			safe_sound_stop("#car_engine")
+			safe_sound_stop("#car_horn_honking")
+			pcall(function()			sprite.play_flipbook(self.active_sprite, hash("car_idle")) end)
+
+			-- Matar al jugador
+			pcall(function()
+				game_state.set_global("health", 0)
+				-- source = "car" → el HUD discrimina el mensaje de derrota
+				-- (car_defeat en vez de fight_defeat, Ago 2026).
+				msg.post(self.player_url, "taken_damage", { amount = DAMAGE, source = "car" })
+			end)
+
+			-- Auto-limpiar tras unos segundos (final() enviará car_destroyed)
+			timer.delay(3.0, false, function()
+				pcall(function() go.delete() end)
+			end)
+
+			dprint("[CAR] 💀 ¡Atropello! Jugador eliminado")
+		end
+	end
+end

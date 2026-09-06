@@ -1,0 +1,312 @@
+-- main/scene_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🗺️ GESTOR DE ESCENAS + ROUTER DE INPUT
+-- ═══════════════════════════════════════════════════════
+--
+--   Vive en bootstrap: carga/descarga proxies (intro, level_01),
+--   adquiere el input focus REAL y reenvía los eventos a la
+--   escena activa según su modo ("intro" / "level_01").
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "start_playlist"/"stop_playlist" (audio_manager)
+--     → "set_pause_enabled" (GUI library/pause)
+--   Mensajes que RECIBE (on_message):
+--     ← "goto_intro"/"goto_level_01"
+--     ← "proxy_loaded"/"proxy_unloaded"/"pause_game"/"resume_game"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local PROXY_INTRO    = msg.url("bootstrap:/proxy_intro#proxy")
+local PROXY_LEVEL_01 = msg.url("bootstrap:/proxy_level_01#proxy")
+local AUDIO_MANAGER_URL = "bootstrap:/audio_manager#manager"
+
+local config = require "main.config"
+local platform = require "main.platform"
+local game_state = require "main.game_state"  -- 🔧 DEV: atajo de victoria completa (key_n)
+
+-- 🔧 DEBUG [ESCENAS]: cambiar a true para activar los logs del gestor de escenas.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_SCENE = false
+local dprint = config.make_log(DEBUG_SCENE)
+
+-- ============================================
+-- CARGA DE ESCENAS
+-- ============================================
+
+local function load_scene(self, proxy)
+  if self.current_proxy then
+    msg.post(self.current_proxy, "unload")
+  end
+  self.current_proxy = proxy
+  msg.post(proxy, "async_load")
+end
+
+-- ============================================
+-- INIT
+-- ============================================
+
+function init(self)
+  msg.post(".", "acquire_input_focus")
+
+  -- 📱 Detección de plataforma en el BOOTSTRAP (no en level_01): main.script
+  -- vive en level_01, así que si la detección se dejara allí, los consumidores
+  -- del bootstrap (web_controls.gui_script) la perderían durante la intro
+  -- (polling con timeout → degradación a escritorio). Al llamarla aquí, la
+  -- detección ocurre al arrancar y web_controls la capta en su primer frame.
+  platform.detect()
+
+  self.current_proxy  = nil
+  self.pending_proxy  = nil
+  self.loading_proxy  = nil   -- proxy en proceso de carga (evita doble envío)
+  self.input_mode     = nil   -- "intro" | "level_01" | nil
+  self.input_target   = nil   -- usado en modo "intro" (único destino)
+  self.input_targets  = {}    -- usado en modo "level_01" (múltiples destinos)
+  self.paused_count   = 0     -- contar cuántos sistemas piden pausa (libro, diálogo…)
+  self.is_paused      = false -- true cuando el proxy level_01 está congelado (set_time_step factor=0)
+
+  dprint("[SceneManager] Init - Cargando intro...")
+  load_scene(self, PROXY_INTRO)
+end
+
+-- ============================================
+-- PAUSA / REANUDACIÓN DEL TIEMPO DEL NIVEL
+-- ============================================
+--
+--   El nivel principal se carga mediante un Collection Proxy
+--   (proxy_level_01 dentro de bootstrap). Para pausar TODO lo
+--   que ocurre dentro de ese nivel (física, animaciones
+--   de sprites, go.animate, timers, update() y la entrada
+--   de acciones de input del proxy) enviamos set_time_step
+--   con factor = 0 y mode = 1 al propio componente "proxy".
+--
+--   factor = 0   → congela el flujo temporal de la colección
+--   mode = 1     → además ignora las acciones de input del proxy
+--                   (la entrada "per-script" por acquire_input_focus
+--                   sigue funcionando para la GUI del libro)
+--
+--   Implementamos un contador de pausas (paused_count) para
+--   soportar múltiples sistemas pausando a la vez (libros,
+--   diálogos, etc.). Sólo cuando el contador llegue a 0
+--   reanudamos realmente el tiempo.
+-- ============================================
+
+local function pause_time(self)
+  self.paused_count = self.paused_count + 1
+  if self.paused_count == 1 and self.current_proxy == PROXY_LEVEL_01 then
+    self.is_paused = true
+    msg.post(PROXY_LEVEL_01, "set_time_step", { factor = 0, mode = 1 })
+    dprint("[SceneManager] ⏸  Juego pausado (set_time_step factor=0 mode=1)")
+  end
+end
+
+local function resume_time(self)
+  if self.paused_count == 0 then
+    return
+  end
+  self.paused_count = self.paused_count - 1
+  if self.paused_count == 0 and self.current_proxy == PROXY_LEVEL_01 then
+    self.is_paused = false
+    msg.post(PROXY_LEVEL_01, "set_time_step", { factor = 1, mode = 0 })
+    dprint("[SceneManager] ▶  Juego reanudado (set_time_step factor=1 mode=0)")
+  end
+end
+
+function final(self)
+  msg.post(".", "release_input_focus")
+end
+
+-- ============================================
+-- INPUT → REENVÍO A LA ESCENA ACTIVA
+-- ============================================
+
+function on_input(self, action_id, action)
+
+  -- 🔧 DEV (key_n + config.DEV_MODE): atajo de victoria completa para pruebas.
+  --    Marca las condiciones de las 4 tareas y dispara la secuencia de
+  --    victoria real (pause + GUI). Se gestiona aquí (bootstrap) porque es el
+  --    handler global: funciona en intro y en nivel, y sobrevive a la pausa.
+  if config.DEV_MODE and action_id == hash("debug_victory") and action.pressed then
+    game_state.debug_force_victory()
+    return
+  end
+
+  -- ========== MODO INTRO ==========
+  if self.input_mode == "intro" and self.input_target then
+    -- Reenviar eventos de ratón a la GUI
+    if action_id == nil or ((action_id == hash("touch") or action_id == hash("click")) and action.pressed) then
+      msg.post(self.input_target, "mouse_event", {
+        x         = action.x,
+        y         = action.y,
+        pressed   = action.pressed,
+        action_id = action_id
+      })
+    end
+
+    -- Reenviar tecla Tab al script de animación para saltar la intro
+    if action.pressed and action_id == hash("key_tab") then
+      msg.post("intro:/intro_animation#anim_script", "skip_animation")
+    end
+
+    return
+  end
+
+  -- ========== MODO LEVEL_01 ==========
+  if self.input_mode == "level_01" and #self.input_targets > 0 then
+    -- Cuando el proxy está pausado (set_time_step mode=1), los on_input
+    -- directos de scripts dentro del proxy se bloquean, pero los msg.post
+    -- no están afectados por set_time_step. Sin este check, el forwarding
+    -- de input_event seguiría llegando al player, cursor, etc. y el
+    -- jugador podría moverse detrás del menú de pausa / libro.
+    if self.is_paused then
+      return
+    end
+
+    local event = {
+      action_id = action_id,
+      x         = action.x,
+      y         = action.y,
+      screen_x  = action.screen_x,
+      screen_y  = action.screen_y,
+      pressed   = action.pressed,
+      released  = action.released,
+      value     = action.value,
+      touch     = action.touch,   -- 📱 multi-touch (TOUCH_MULTI, ver web_controls.gui_script)
+    }
+    for _, url in ipairs(self.input_targets) do
+      msg.post(url, "input_event", event)
+    end
+    return
+  end
+
+end
+
+-- ============================================
+-- MENSAJES
+-- ============================================
+
+function on_message(self, message_id, message, sender)
+
+  -- Proxy cargado → habilitarlo y configurar input
+  if message_id == hash("proxy_loaded") then
+    msg.post(sender, "enable")
+
+    -- INTRO cargada
+    if sender == PROXY_INTRO then
+      -- 🐛 FIX (Ago 2026): trackear current_proxy también aquí (espejo de la
+      -- rama level_01). Sin esto, tras victoria → "Nueva partida" → goto_intro,
+      -- current_proxy seguía apuntando a PROXY_LEVEL_01 (stale) y el siguiente
+      -- goto_level_01 se ignoraba con "level_01 ya está activo" — imposible
+      -- volver a entrar al juego desde la intro.
+      self.current_proxy = PROXY_INTRO
+      self.input_mode   = "intro"
+      self.input_target = "intro:/gui_intro#intro_gui"
+      self.input_targets = {}
+
+      -- 🎵 Detener la playlist global: la intro usa sus propias pistas
+      --    (play_ambient legacy desde intro_animation.script).
+      msg.post(AUDIO_MANAGER_URL, "stop_playlist")
+
+      -- 🚫 Deshabilitar pausa y libros durante la intro
+      msg.post("bootstrap:/gui_library#pause", "set_pause_enabled", { enabled = false })
+      msg.post("bootstrap:/gui_library#library", "set_pause_enabled", { enabled = false })
+
+      -- 📱 Ocultar controles táctiles al volver a la intro
+      msg.post("bootstrap:/gui_web_controls#web_controls", "mobile_controls", { active = false })
+      dprint("[SceneManager] Intro cargada → input → intro:/gui_intro#intro_gui | Pausa y libros deshabilitados")
+
+    -- LEVEL_01 cargada
+    elseif sender == PROXY_LEVEL_01 then
+      self.loading_proxy = nil
+      local old_proxy = self.current_proxy
+      self.current_proxy = PROXY_LEVEL_01
+
+      -- 🎵 Arrancar la playlist global de fondo (calm_1, calm_2,
+      --    exploration_1..4 en secuencia; la intro queda detrás).
+      msg.post(AUDIO_MANAGER_URL, "start_playlist")
+
+      self.input_mode   = "level_01"
+      self.input_target = nil
+      self.input_targets = {
+        "level_01:/cursor#cursor",
+        "level_01:/player#player",
+        "level_01:/player#player_spray",
+        "level_01:/game_manager#main",
+        "level_01:/gui#interactive",
+        "level_01:/gui#hud",
+        "level_01:/gui#exhibition",
+        "bootstrap:/gui_web_controls#web_controls",   -- 📱 controles táctiles (solo se muestran en táctil)
+      }
+
+      -- ✅ Habilitar pausa y libros al entrar en el nivel de juego
+      msg.post("bootstrap:/gui_library#pause", "set_pause_enabled", { enabled = true })
+      msg.post("bootstrap:/gui_library#library", "set_pause_enabled", { enabled = true })
+
+      -- 📱 Mostrar controles táctiles solo en gameplay (el gui_script aplica
+      --    su propio gate de plataforma: solo se renderiza en dispositivos táctiles)
+      msg.post("bootstrap:/gui_web_controls#web_controls", "mobile_controls", { active = true })
+      dprint("[SceneManager] Level_01 cargada → input → 8 targets | Pausa y libros habilitados")	-- Descargar la escena anterior (ej: intro)
+	if old_proxy then
+		msg.post(old_proxy, "unload")
+		dprint("[SceneManager] Descargando escena anterior...")
+	end
+
+    else
+      dprint("[SceneManager] Proxy desconocido: " .. tostring(sender))
+    end
+
+  -- Proxy descargado → cargar escena pendiente (si la hay)
+  elseif message_id == hash("proxy_unloaded") then
+    if self.pending_proxy then
+      local p = self.pending_proxy
+      self.pending_proxy = nil
+      msg.post(p, "async_load")
+    end
+
+  -- Navegación
+  elseif message_id == hash("goto_intro") then
+    self.pending_proxy = PROXY_INTRO
+    -- 🚫 Limpiar el input INMEDIATAMENTE: si no, durante la transición (nivel
+    -- ya descargado + intro aún cargando) cada evento de input se reenvía a
+    -- "level_01:/..." que ya no existe → "Could not find socket 'level_01'"
+    -- (lo exponía el botón "Nueva partida" de la pantalla de victoria). El
+    -- proxy_loaded de la intro re-configura input_mode al terminar de cargar.
+    self.input_mode   = nil
+    self.input_target = nil
+    self.input_targets = {}
+    if self.current_proxy then
+      msg.post(self.current_proxy, "unload")
+    end
+
+  elseif message_id == hash("goto_level_01") then
+    -- Evitar recarga si level_01 ya está cargado o en proceso de carga
+    if self.current_proxy == PROXY_LEVEL_01 then
+      dprint("[SceneManager] goto_level_01 ignorado: level_01 ya está activo")
+      return
+    end
+    if self.loading_proxy == PROXY_LEVEL_01 then
+      dprint("[SceneManager] goto_level_01 ignorado: level_01 ya está cargando")
+      return
+    end
+
+    -- Cargar level_01 directamente; la intro se descargará después (en proxy_loaded)
+    self.loading_proxy = PROXY_LEVEL_01
+    if self.current_proxy then
+      msg.post(PROXY_LEVEL_01, "async_load")
+      dprint("[SceneManager] goto_level_01: cargando level_01...")
+    else
+      load_scene(self, PROXY_LEVEL_01)
+    end
+
+  -- Pausa / reanudación del juego desde cualquier script del nivel
+  -- (ej: library.gui_script al abrir/cerrar un libro)
+  elseif message_id == hash("pause_game") then
+    pause_time(self)
+  elseif message_id == hash("resume_game") then
+    resume_time(self)
+
+  end
+
+end

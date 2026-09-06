@@ -1,0 +1,403 @@
+-- main/npc.script
+-- ═══════════════════════════════════════════════════════
+-- 🧑 NPC — COMPORTAMIENTO
+-- ═══════════════════════════════════════════════════════
+--
+--   Comportamiento de cada NPC: patrulla opcional, hover/clic,
+--   estados de disponibilidad (cooldown, quiz de restauración)
+--   y comunicación con dialogue_manager.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "start_conversation"/"npc_unavailable" (dialogue_manager)
+--   Mensajes que RECIBE (on_message):
+--     ← "interact"/"mouse_hover"      (desde cursor)
+--     ← "start_talking"/"stop_talking"/"npc_state_changed"
+--     ← "npc_spawn_updated"/"contact_point_response"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+local npc_spawn_state = require "main.npc_spawn_state"
+local patrol = require "features.npc.npc_patrol"
+local inventory_core = require "main.inventory_core" -- 🛠️ gate del quiz de restauración (módulo puro, sin API Defold)
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_NPC = false
+local dprint = config.make_log(DEBUG_NPC)
+
+-- ═══════════════════════════════════════════════════════
+-- ⚙️ PROPIEDADES CONFIGURABLES (desde el editor)
+-- ═══════════════════════════════════════════════════════
+
+go.property("patrol_enabled", false)  -- Activar/desactivar patrulla
+go.property("patrol_speed", 40)        -- Velocidad de paseo (px/s)
+go.property("patrol_radius", 250)      -- Radio máximo desde spawn
+
+-- 🧩 TIPO DE NPC (configurable en el editor, ver npc_spawn_state.NPC_TYPE_*):
+--   quiz_general    → quiz de arqueología/genérico (pool_1) — DEFAULT
+--   quiz_restoration → quiz de restauración (pool_2): flujo de restauración,
+--                      reutilizable y con cooldown propio (la restauradora)
+--   quiz_false      → conversación de ambiente sin quiz (npc_XX_talk_N)
+--   ⚠️ Propiedad HASH (este proyecto no soporta PROPERTY_TYPE_STRING en
+--   .collection): en el editor se escribe el valor como string y el motor lo
+--   convierte a hash. En init() se normaliza a string y se registra en
+--   npc_spawn_state, que es lo que consultan dialogue_manager / HUD /
+--   inventory_manager (sin comparar ids hardcodeados).
+--   ⚠️ PRECEDENCIA: config.NPC_TYPES (código) manda sobre esta propiedad —
+--   el editor re-serializa level_01.collection y puede eliminar los
+--   component_properties; la propiedad solo actúa si el NPC NO está en
+--   config.NPC_TYPES (override para NPCs futuros).
+go.property("npc_type", hash("quiz_general"))
+
+-- 🔁 Normaliza el hash de la propiedad npc_type a su string (lo que registran
+--    y consultan los consumidores vía npc_spawn_state). Hash desconocido →
+--    quiz_general (default seguro si el editor deja un valor residual).
+local NPC_TYPE_TO_STR = {
+	[hash("quiz_general")]    = npc_spawn_state.NPC_TYPE_QUIZ_GENERAL,
+	[hash("quiz_restoration")] = npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION,
+	[hash("quiz_false")]      = npc_spawn_state.NPC_TYPE_QUIZ_FALSE,
+}
+
+-- ============================================
+-- FUNCIONES LOCALES
+-- ============================================
+
+local function highlight_sprite(sprite_url, highlight)
+	local target_color = highlight and vmath.vector4(1.2, 1.2, 1.0, 1.0) or vmath.vector4(1.0, 1.0, 1.0, 1.0)
+	go.animate(sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, target_color, go.EASING_OUTCUBIC, 0.15)
+end
+
+local function get_player_position()
+	local player_url = msg.url("/features/player/player")
+	if not go.exists(player_url) then
+		player_url = msg.url("/player")
+		if not go.exists(player_url) then return nil end
+	end
+	return go.get_position(player_url)
+end
+
+-- 🛠️ ¿El jugador lleva un objeto pendiente de restaurar? (estado RESTORATION
+-- del inventario). Es el criterio compartido del gate del quiz de la
+-- restauradora (on_interact) y de su icono de disponibilidad
+-- (update_icon_state): sin pieza en RESTORATION, hablar con ella devuelve
+-- "no disponible".
+-- ⚠️ Acoplamiento latente: el global inventory_items_status solo se
+-- sincroniza desde la tabla del inventory_core vía save_inventory_state
+-- (todas las rutas de mutación la llaman). Si una futura mutación olvidara
+-- esa llamada, el gate y el icono leerían un estado obsoleto.
+local function has_restoration_item()
+	local item_id = game_state.get_global("inventory_current_item_id")
+	local status = game_state.get_global("inventory_items_status") or {}
+	local item_state = item_id and status[item_id]
+	return item_state == inventory_core.STATES.RESTORATION
+end
+
+-- ⏱️ ICONO de disponibilidad: el cooldown de los NPCs es wall-clock
+-- (os.time + 60s en register_npc_failure) y NO genera ningún evento al
+-- expirar — solo la restauradora recibe un timer.delay del dialogue_manager
+-- (que además vive en RAM y no sobrevive a guardar/recargar). Por eso el
+-- icono se quedaba en rojo tras la reactivación. Solución: polling THROTTLED
+-- (2 Hz) en update(), la alternativa explícitamente aceptada en
+-- docs/plans/archive/PERFORMANCE_ANALYSIS.md ("bajar la frecuencia a 1-2 veces por segundo
+-- usando un timer"). Con la caché last_icon_state el coste es despreciable
+-- cuando nada cambia: lectura de tablas + os.time, sin alocaciones.
+-- Frecuencia configurable en main/config.lua → M.balance.npc_icon_poll_interval.
+local ICON_POLL_INTERVAL = config.balance.npc_icon_poll_interval or 0.5
+
+-- 🎥 CULLING POR CÁMARA (Ago 2026): desactivar patrulla de NPCs off-screen.
+-- Los márgenes se calculan a partir del tamaño de ventana ACTUAL (window.get_size)
+-- y el zoom de la cámara, para adaptarse a resize, fullscreen y móviles.
+-- Factor configurable en config.balance → npc_cull_margin_factor.
+local ORTHO_ZOOM = 2.0  -- Debe coincidir con screen_utils.lua ORTHO_ZOOM
+local CULL_MARGIN_FACTOR = (config.balance and config.balance.npc_cull_margin_factor) or 1.30
+
+local function is_on_screen(npc_pos)
+	-- 📏 Área visible = window_size / zoom (ortográfico)
+	local ww, wh = window.get_size()
+	local visible_w = ww / ORTHO_ZOOM
+	local visible_h = wh / ORTHO_ZOOM
+	-- Margen = mitad del área visible × factor (130% = 30% extra)
+	local margin_x = (visible_w * CULL_MARGIN_FACTOR) / 2
+	local margin_y = (visible_h * CULL_MARGIN_FACTOR) / 2
+	-- Posición de la cámara (resuelta en runtime, no cacheada a nivel de módulo)
+	local cam_pos = go.exists("/camera") and go.get_position("/camera") or vmath.vector3(0, 0, 0)
+	local dx = math.abs(npc_pos.x - cam_pos.x)
+	local dy = math.abs(npc_pos.y - cam_pos.y)
+	return dx < margin_x and dy < margin_y
+end
+
+-- ✨ FUNCIÓN CORREGIDA: Lee directamente de game_state para evitar estados desactualizados
+local function update_icon_state(self)
+	if not go.exists(self.icon_url) then return end
+
+	-- 1. Consultar la fuente de la verdad en tiempo real
+	local progress = game_state.npc_progress[self.npc_id_string]
+	local is_completed = progress and progress.completed or false
+	local is_available = game_state.is_npc_available(self.npc_id_string)
+
+	-- 🛠️ NPC de quiz de RESTAURACIÓN (quiz_restoration): el verde solo indica
+	-- disponibilidad REAL si además hay una pieza pendiente de restaurar
+	-- (mismo criterio que el gate del quiz en on_interact). Sin pieza, el
+	-- icono es rojo — hablar con ella responderá "no disponible".
+	if self.npc_type == npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION and is_available and not has_restoration_item() then
+		is_available = false
+	end
+
+	-- 2. Determinar el estado visual
+	local new_state
+	if is_completed then
+		new_state = "hidden" -- Resuelto correctamente (o vida útil terminada)
+	elseif is_available then
+		new_state = "available" -- Tiene intentos disponibles
+	else
+		new_state = "unavailable" -- Agotó los 3 intentos o bloqueado
+	end
+
+	-- 3. Caché: Solo actuar si el estado cambia (evita sobrecarga)
+	if new_state == self.last_icon_state then
+		return
+	end
+
+	dprint("🔄 " .. self.npc_id_string .. " - Icon: " .. new_state .. " (Completed: " .. tostring(is_completed) .. ", Available: " .. tostring(is_available) .. ")")
+	self.last_icon_state = new_state
+
+	-- 4. Aplicar cambios visuales
+	if new_state == "hidden" then
+		go.set(self.icon_url, "scale", vmath.vector3(0))
+	else
+		go.set(self.icon_url, "scale", self.icon_base_scale)
+
+		if new_state == "available" then
+			sprite.play_flipbook(self.icon_url, hash("icon_dialog_green"))
+		else
+			sprite.play_flipbook(self.icon_url, hash("icon_dialog_red"))
+		end
+	end
+end
+
+local function set_talking_animation(self, is_talking)
+	if is_talking == self.is_talking then return end
+	self.is_talking = is_talking
+
+	if is_talking then
+		sprite.play_flipbook(self.sprite_url, hash("talk"))
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.2, 1.2, 0.8, 1.0), go.EASING_INSINE, 0.15)
+	else
+		sprite.play_flipbook(self.sprite_url, hash("idle"))
+		self.current_walk_anim = hash("idle")
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTSINE, 0.15)
+	end
+end
+
+-- 🚶 Reproduce la animación de caminata según la dirección del movimiento
+local function sync_walk_animation(self)
+	if not go.exists(self.sprite_url) then return end
+	if self.patrol_state == "DISABLED" then return end
+
+	local anim_id
+	if self.patrol_state == "IDLE" then
+		anim_id = hash("idle")
+	elseif self.patrol_state == "PATROL" then
+		local dx = self.patrol_dir_x or 0
+		local dy = self.patrol_dir_y or 0
+		-- Priorizar eje dominante para elegir dirección
+		if math.abs(dx) >= math.abs(dy) then
+			anim_id = (dx > 0) and hash("walk_right") or hash("walk_left")
+		else
+			anim_id = (dy > 0) and hash("walk_top") or hash("walk_down")
+		end
+	end
+
+	if anim_id and anim_id ~= self.current_walk_anim then
+		self.current_walk_anim = anim_id
+		sprite.play_flipbook(self.sprite_url, anim_id)
+	end
+end
+
+local function show_unavailable_feedback(self)
+	-- 💬 Avisar al dialogue_manager para que muestre el globo "no disponible"
+	-- por la GUI (el diálogo centraliza los globos; ver GOTCHA #12). El tint
+	-- rojo local sigue siendo el feedback visual inmediato del NPC.
+	msg.post("/game_manager#dialogue_manager", "npc_unavailable", {
+		npc_id = self.npc_id_string
+	})
+
+	local error_color = vmath.vector4(1.0, 0.5, 0.5, 1.0)
+	go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, error_color, go.EASING_OUTCUBIC, 0.2)
+	timer.delay(0.3, false, function()
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.2)
+		end
+	end)
+end
+
+local function on_interact(self)
+	-- 📏 Ago 2026: el gate de distancia se unificó en los HUBS (cursor.script /
+	-- mobile_interact.script, interaction_range global de main/config.lua) —
+	-- el interact aquí solo llega con el jugador dentro del rango.
+	local player_pos = get_player_position()
+	if not player_pos then return end
+
+	-- 🛠️ NPC de quiz de RESTAURACIÓN (quiz_restoration): su quiz SOLO tiene
+	-- sentido cuando el jugador lleva un objeto pendiente de restaurar
+	-- (estado RESTORATION del inventario). Sin pieza → mismo aviso de no
+	-- disponible (el dialogue_manager muestra el texto específico).
+	if self.npc_type == npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION then
+		-- Migración única: un guardado antiguo puede tener completed=true
+		-- heredado de la lógica genérica previa (bloquearía el flujo).
+		game_state.migrate_npc_if_completed(self.npc_id_string)
+
+		if not has_restoration_item() then
+			show_unavailable_feedback(self)
+			return
+		end
+	end
+
+	-- ⚠️ Cuando el NPC no está disponible NO se postea start_conversation:
+	-- se avisa al dialogue_manager con 'npc_unavailable' (que muestra el globo
+	-- por la GUI). No añadir aquí otra vía o el globo se mostraría dos veces.
+	if not game_state.is_npc_available(self.npc_id_string) then
+		show_unavailable_feedback(self)
+		return
+	end
+
+	msg.post("/game_manager#dialogue_manager", "start_conversation", {
+		npc_id = self.npc_id_string
+	})
+end
+
+-- ============================================
+-- MÉTODOS NATIVOS DE DEFOLD
+-- ============================================
+
+function init(self)
+	local id_string_raw = tostring(go.get_id())
+	local clean_path = id_string_raw:match("%s*%[%s*(.-)%s*%]") or id_string_raw
+	self.npc_id_string = clean_path:match("([^/]+)$") or "npc_01"
+
+	-- 🎯 Registrar la URL REAL del NPC para el spawn manager
+	--    (GOTCHA #4: go.get_id() devuelve la ruta completa; nunca adivinar
+	--     rutas anidadas como /level2/npcs/npc_01)
+	npc_spawn_state.register_npc(self.npc_id_string, go.get_id())
+
+	-- 🧩 Registrar el TIPO del NPC para que dialogue_manager / HUD /
+	--    inventory_manager lo consulten sin comparar ids hardcodeados (ver
+	--    npc_spawn_state.npc_types).
+	--    Fuente de verdad: config.NPC_TYPES (código — el editor RE-SERIALIZA
+	--    level_01.collection y puede eliminar los component_properties). La
+	--    propiedad npc_type del editor es solo un OVERRIDE opcional para
+	--    NPCs nuevos no listados en config. La propiedad es HASH: se
+	--    normaliza a string (los consumidores comparan strings).
+	local npc_type_str = config.NPC_TYPES and config.NPC_TYPES[self.npc_id_string]
+	if not npc_type_str then
+		npc_type_str = NPC_TYPE_TO_STR[self.npc_type] or npc_spawn_state.NPC_TYPE_QUIZ_GENERAL
+	end
+	self.npc_type = npc_type_str
+	npc_spawn_state.register_npc_type(self.npc_id_string, npc_type_str)
+
+	self.sprite_url = msg.url(nil, nil, "sprite_anim")
+	self.icon_url = msg.url(nil, nil, "sprite_icon")
+
+	self.is_talking = false
+	self.current_walk_anim = hash("idle")
+	self.last_icon_state = nil
+	self.icon_poll_timer = 0
+
+	-- Guardar la escala base del icono para poder restaurarla después
+	if go.exists(self.icon_url) then
+		self.icon_base_scale = go.get(self.icon_url, "scale")
+	else
+		self.icon_base_scale = vmath.vector3(1)
+	end
+
+	if go.exists(self.sprite_url) then
+		sprite.play_flipbook(self.sprite_url, hash("idle"))
+		self.current_walk_anim = hash("idle")
+	end
+
+	-- 🚶 Inicializar patrulla si está activada
+	if self.patrol_enabled then
+		patrol.init(self, go.get_position())
+		self.patrol_speed = self.patrol_speed or 30
+		self.patrol_radius = self.patrol_radius or 250
+		dprint("[NPC] " .. self.npc_id_string .. " 🚶 Patrulla activada (radio=" .. self.patrol_radius .. ")")
+	end
+
+	update_icon_state(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚶 UPDATE: Solo ejecuta lógica si la patrulla está activa
+-- ═══════════════════════════════════════════════════════
+
+function update(self, dt)
+	-- ⏱️ Icono de disponibilidad: polling throttled (2 Hz, ver
+	-- ICON_POLL_INTERVAL) para detectar la expiración del cooldown wall-clock
+	-- sin evento. Sin esto, el icono de un NPC cuyo quiz se falló quedaría en
+	-- rojo para siempre tras reactivarse. update_icon_state cachea con
+	-- last_icon_state → coste ~0 cuando el estado no cambia.
+	self.icon_poll_timer = self.icon_poll_timer + dt
+	if self.icon_poll_timer >= ICON_POLL_INTERVAL then
+		self.icon_poll_timer = 0
+		update_icon_state(self)
+	end
+
+	if self.patrol_enabled and not self.is_talking then
+		-- 🎥 Culling por cámara: si el NPC está fuera de pantalla,
+		-- skip patrol + raycasts + animation (Ago 2026).
+		local my_pos = go.get_position()
+		if not is_on_screen(my_pos) then
+			return
+		end
+		local player_pos = get_player_position()
+		if player_pos then
+			patrol.update(self, dt, player_pos, my_pos)
+		end
+		-- 🚶 Sincronizar animación de caminata con el movimiento de patrulla
+		sync_walk_animation(self)
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		highlight_sprite(self.sprite_url, message.enter)
+	elseif message_id == hash("interact") then
+		on_interact(self)
+	elseif message_id == hash("start_talking") then
+		set_talking_animation(self, true)
+		if self.patrol_enabled then
+			patrol.pause(self)
+		end
+	elseif message_id == hash("stop_talking") then
+		set_talking_animation(self, false)
+		if self.patrol_enabled then
+			patrol.resume(self)
+		end
+	elseif message_id == hash("contact_point_response") then
+		if self.patrol_enabled then
+			if message.group == hash("walls") then
+				patrol.on_contact_point(self, message)
+			end
+		end
+	elseif message_id == hash("npc_state_changed") then
+		update_icon_state(self)
+	elseif message_id == hash("npc_spawn_updated") then
+		-- 🎯 El spawn manager acaba de (re)posicionar este NPC:
+		--    re-anclar la patrulla al nuevo punto de origen
+		if self.patrol_enabled then
+			patrol.init(self, go.get_position())
+			self.patrol_speed = self.patrol_speed or 30
+			self.patrol_radius = self.patrol_radius or 250
+		end
+	end
+end
+
+function on_reload(self)
+	self.last_icon_state = nil
+	self.current_walk_anim = hash("idle")
+	update_icon_state(self)
+	self.is_talking = false
+end

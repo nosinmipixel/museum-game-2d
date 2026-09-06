@@ -1,0 +1,51 @@
+name: "intro"
+instances {
+  id: "intro_manager"
+  prototype: "/intro/intro_manager.go"
+}
+instances {
+  id: "intro_animation"
+  prototype: "/intro/intro_animation.go"
+  children: "player_intro"
+}
+instances {
+  id: "player_intro"
+  prototype: "/intro/player_intro.go"
+  position {
+    x: 13.0
+    y: 137.0
+    z: 1.0
+  }
+}
+scale_along_z: 0
+embedded_instances {
+  id: "gui_intro"
+  data: "components {\n"
+  "  id: \"intro_gui\"\n"
+  "  component: \"/intro/gui/intro.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"mouse_click\"\n"
+  "  component: \"/assets/sounds/mouse-click.sound\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "camera"
+  data: "embedded_components {\n"
+  "  id: \"camera\"\n"
+  "  type: \"camera\"\n"
+  "  data: \"aspect_ratio: 1.0\\n"
+  "fov: 0.7854\\n"
+  "near_z: 0.1\\n"
+  "far_z: 20.0\\n"
+  "orthographic_projection: 1\\n"
+  "\"\n"
+  "}\n"
+  ""
+  position {
+    x: 640.0
+    y: 384.0
+    z: 10.0
+  }
+}

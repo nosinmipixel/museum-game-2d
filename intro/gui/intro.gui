@@ -1,0 +1,507 @@
+script: "/intro/gui/intro.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+fonts {
+  name: "title"
+  font: "/assets/fonts/title.font"
+}
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 384.0
+  }
+  size {
+    x: 1280.0
+    y: 768.0
+  }
+  color {
+    x: 0.05
+    y: 0.05
+    z: 0.1
+  }
+  type: TYPE_BOX
+  id: "bg"
+  layer: "background"
+  inherit_alpha: true
+  alpha: 0.8
+}
+nodes {
+  position {
+    x: 640.0
+    y: 676.0
+  }
+  size {
+    x: 1000.0
+    y: 150.0
+  }
+  type: TYPE_TEXT
+  text: "<title_text>"
+  font: "title"
+  id: "title_text"
+  layer: "text"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 626.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 3200.0
+    y: 600.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "<intro_text>"
+  font: "dialogs"
+  id: "intro_text"
+  pivot: PIVOT_N
+  line_break: true
+  layer: "text"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 544.0
+    y: 106.0
+  }
+  size {
+    x: 175.0
+    y: 60.0
+  }
+  color {
+    x: 0.2
+    y: 0.4
+    z: 0.8
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "btn_es"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 500.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Espa\303\261ol"
+  font: "dialogs"
+  id: "text_btn_es"
+  parent: "btn_es"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 729.0
+    y: 106.0
+  }
+  size {
+    x: 175.0
+    y: 60.0
+  }
+  color {
+    x: 0.2
+    y: 0.4
+    z: 0.8
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "btn_en"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 500.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "English"
+  font: "dialogs"
+  id: "text_btn_en"
+  parent: "btn_en"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 740.0
+    y: 181.0
+  }
+  size {
+    x: 200.0
+    y: 60.0
+  }
+  color {
+    x: 0.1
+    y: 0.6
+    z: 0.2
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "btn_continue"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    y: -1.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 600.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Continuar"
+  font: "dialogs"
+  id: "text_btn_continue"
+  parent: "btn_continue"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 531.0
+    y: 181.0
+  }
+  size {
+    x: 200.0
+    y: 60.0
+  }
+  color {
+    x: 0.6
+    y: 0.2
+    z: 0.2
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "btn_new_game"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    y: -1.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 700.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Nueva Partida"
+  font: "dialogs"
+  id: "text_btn_new_game"
+  parent: "btn_new_game"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 181.0
+  }
+  size {
+    x: 200.0
+    y: 60.0
+  }
+  color {
+    x: 0.2
+    y: 0.6
+    z: 0.3
+  }
+  type: TYPE_BOX
+  texture: "gui/button_green"
+  id: "btn_start"
+  layer: "buttons"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    x: 3.0
+    y: -2.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 600.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Empezar"
+  font: "dialogs"
+  id: "text_btn_start"
+  parent: "btn_start"
+  layer: "buttons"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1180.0
+    y: 446.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_arrow_right"
+  id: "btn_forward"
+  layer: "buttons"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 93.0
+    y: 446.0
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_arrow_left"
+  id: "btn_backward"
+  layer: "buttons"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 640.0
+    y: 326.0
+  }
+  size {
+    x: 600.0
+    y: 200.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_bubble"
+  id: "window_alert"
+  layer: "background_window"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 10.0
+    z: 10.0
+    w: 10.0
+  }
+}
+nodes {
+  position {
+    y: 35.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 2000.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "window_text_alert"
+  line_break: true
+  parent: "window_alert"
+  layer: "text_window"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 509.0
+    y: 283.0
+  }
+  size {
+    x: 175.0
+    y: 60.0
+  }
+  color {
+    x: 0.6
+    y: 0.2
+    z: 0.2
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "window_btn_yes"
+  layer: "buttons_window"
+  inherit_alpha: true
+  slice9 {
+    x: 15.0
+    y: 15.0
+    z: 15.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    x: 3.0
+    y: -2.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 500.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Yes"
+  font: "dialogs"
+  id: "text_btn_yes"
+  parent: "window_btn_yes"
+  layer: "text_window"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 756.0
+    y: 283.0
+  }
+  size {
+    x: 175.0
+    y: 60.0
+  }
+  color {
+    x: 0.4
+    y: 0.6
+    z: 0.4
+  }
+  type: TYPE_BOX
+  texture: "gui/button_gray"
+  id: "window_btn_no"
+  layer: "buttons_window"
+  inherit_alpha: true
+  slice9 {
+    x: 10.0
+    y: 15.0
+    z: 10.0
+    w: 15.0
+  }
+}
+nodes {
+  position {
+    x: 3.0
+    y: -2.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 500.0
+    y: 80.0
+  }
+  type: TYPE_TEXT
+  text: "Yes"
+  font: "dialogs"
+  id: "text_btn_no"
+  parent: "window_btn_no"
+  layer: "text_window"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 640.0
+    y: 65.0
+  }
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 3500.0
+    y: 150.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "<warning_text>"
+  font: "dialogs"
+  id: "warning_text"
+  pivot: PIVOT_N
+  layer: "text"
+  inherit_alpha: true
+}
+layers {
+  name: "background"
+}
+layers {
+  name: "text"
+}
+layers {
+  name: "buttons"
+}
+layers {
+  name: "background_window"
+}
+layers {
+  name: "buttons_window"
+}
+layers {
+  name: "text_window"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

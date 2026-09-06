@@ -1,0 +1,12 @@
+font: "/assets/fonts/MatrixSans-Regular.ttf"
+material: "/builtins/fonts/font-df.material"
+size: 80
+antialias: 0
+outline_alpha: 1.0
+outline_width: 4.0
+shadow_alpha: 1.0
+shadow_x: 1.0
+shadow_y: 1.0
+output_format: TYPE_DISTANCE_FIELD
+all_chars: true
+characters: " !\"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\303\241\303\251\303\255\303\263\303\272\303\274\303\261\303\201\303\211\303\215\303\223\303\232\303\234\303\221\302\277\302\241\302\252\302\272\302\253\302\273"

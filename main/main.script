@@ -1,0 +1,121 @@
+-- main/main.script
+-- ═══════════════════════════════════════════════════════
+-- 🚀 SCRIPT PRINCIPAL DEL NIVEL
+-- ═══════════════════════════════════════════════════════
+--
+--   Punto de entrada de level_01: guardado periódico, input
+--   del nivel y orquestación (respawn, inventario, audio).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "goto_intro"        (hacia scene_manager)
+--     → "reset_inventory"   (hacia inventory_manager)
+--     → "npc_state_changed" (hacia NPCs)
+--   Mensajes que RECIBE (on_message):
+--     ← "input_event"/"goto_intro"
+--
+--   ⚠️ platform.detect() NO se hace aquí: vive en
+--   scene_manager (bootstrap), ver platform.lua.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require("main.game_state")
+local persistence = require "main.persistence"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_MAIN = false
+local dprint = config.make_log(DEBUG_MAIN)
+
+-- ⚠️ platform.detect() se invoca ahora en scene_manager.script (bootstrap), NO aquí:
+--    main.script vive en level_01 y su init ocurre tras la intro, demasiado tarde
+--    para los consumidores del bootstrap (web_controls.gui_script). Ver platform.lua.
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 GUARDADO PERIÓDICO
+-- ═══════════════════════════════════════════════════════
+--
+--   En lugar de escribir a disco cada vez que cambia una
+--   variable (lo que ocurría hasta ~20 veces/segundo con
+--   el spray), ahora acumulamos cambios en RAM y escribimos
+--   a disco cada SAVE_INTERVAL segundos.
+-- ═══════════════════════════════════════════════════════
+
+local SAVE_INTERVAL = 5  -- segundos entre guardados a disco
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	if config.DEV_MODE and action_id == hash("key_r") and action.pressed then
+		game_state.reset_all()
+
+		for i = 1, persistence.NPC_COUNT do
+			local npc_url = msg.url(nil, "/npc_" .. string.format("%02d", i), nil)
+			if go.exists(npc_url) then
+				msg.post(npc_url, "npc_state_changed")
+			end
+		end
+
+		msg.post("/inventory_manager", "reset_inventory")
+		dprint("🛠️ DESARROLLO: Guardado limpiado, NPCs e inventario reiniciados.")
+	end
+end
+
+function init(self)
+	msg.post(".", "acquire_input_focus")
+
+	self.save_timer = 0
+
+	if config.DEV_MODE then
+		-- En desarrollo: reseteamos la partida para empezar siempre desde cero
+		game_state.save()
+		game_state.flush()  -- Forzar escritura inmediata para el reset de desarrollo
+		dprint("🔧 DEV_MODE: Partida reseteada para desarrollo")
+	end
+
+	game_state.load()
+end
+
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	-- Mensaje enviado desde cualquier parte del nivel para volver a la intro
+	-- (por ejemplo, desde player.script al morir, o desde el menú de pausa)
+	if message_id == hash("goto_intro") then
+		-- Guardar progreso antes de salir
+		game_state.save()
+		game_state.flush()
+		dprint("[GameManager] Guardando progreso y volviendo a la pantalla de introducción")
+		-- Enviar al scene_manager (vive en bootstrap.collection, socket "bootstrap")
+		msg.post("bootstrap:/main_loader#scene_manager", "goto_intro")
+	end
+end
+
+function final(self)
+	-- Guardar cambios pendientes al cerrar el juego
+	game_state.flush()
+	msg.post(".", "release_input_focus")
+end
+
+function update(self, dt)
+	-- Guardado periódico diferido: escribe a disco cada SAVE_INTERVAL segundos
+	self.save_timer = self.save_timer + dt
+	if self.save_timer >= SAVE_INTERVAL then
+		self.save_timer = 0
+		game_state.flush()
+	end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end

@@ -1,0 +1,344 @@
+-- features/player/player_spray.script
+-- ═══════════════════════════════════════════════════════
+-- 🧴 SPRAY — DISPARO DEL JUGADOR
+-- ═══════════════════════════════════════════════════════
+--
+--   Componente de disparo: crea balas en abanico (cone_angle)
+--   con auto-apuntado (auto_aim) y recursos limitados.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "attack_direction"/"stop_attack" (hacia player)
+--   Mensajes que RECIBE (on_message):
+--     ← "input_event"      (desde scene_manager)
+--     ← "mobile_spray"     (botón táctil web_controls)
+--     ← "player_died"/"player_respawned"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("fire_rate", 0.05)
+go.property("cone_angle", 25)
+go.property("min_speed", 200)
+go.property("max_speed", 400)
+go.property("max_resources", 100)
+
+local SPRAY_OFFSET = 10
+
+local game_state = require("main.game_state")
+local aiming = require("features.player.aiming")
+local auto_aim = require("features.player.auto_aim")
+local config = require("main.config")
+
+-- ⚠️ Definidas ANTES de sus callers (GOTCHA #1 de docs/DEV_GOTCHAS.md): como son
+-- 'local function', init()/update() deben tenerlas en scope léxico cuando se
+-- definen los callers.
+local function on_max_spray_changed(self, old_max, new_max)
+	self.max_resources = new_max
+	if self.resources > new_max then
+		self.resources = new_max
+		game_state.set_global("spray_current", self.resources)
+	end
+end
+
+-- 📱 Fase 3 — Refresca la fuente AUTO de aiming hacia el enemigo más
+--    cercano en rango (auto_aim.find_nearest, zero-alloc). Devuelve true
+--    si hay objetivo en rango (o si SMART_TRIGGER está desactivado: entonces
+--    da igual, se dispara en FACING). Mientras el botón spray se mantiene
+--    pulsado, update() la llama cada frame → el spray sigue al enemigo en
+--    movimiento (no solo al momento del press).
+local function refresh_auto_aim(self)
+	local player_pos = go.get_world_position(self.player_url)
+	local dir = auto_aim.find_nearest(player_pos, config.AUTO_AIM_RANGE, self.auto_aim_out)
+	if dir then
+		aiming.set_auto(dir)
+		return true
+	end
+	aiming.clear_auto()
+	return false
+end
+
+local function fire_particle(self)
+	self.resources = self.resources - 1
+	game_state.set_global("spray_current", self.resources)   -- Sincronizar
+	if self.resources <= 0 then self.firing = false end
+
+	local player_pos = go.get_world_position(self.player_url)
+
+	-- 🎯 Dirección REAL desde la capa unificada (aiming.lua): sin espejos.
+	--    get_direction muta self.aim_out (zero-alloc) y siempre devuelve
+	--    un vector normalizado (cae a facing/last_dir/(0,1,0) si no hay fuente).
+	local dir = aiming.get_direction(player_pos, self.aim_out)
+
+	-- Emisión hacia la dirección de mira (offset delante del jugador)
+	local emit_pos = vmath.vector3(player_pos.x + dir.x * SPRAY_OFFSET,
+	                              player_pos.y + dir.y * SPRAY_OFFSET,
+	                              player_pos.z)
+
+	-- ✅ Ángulo correcto para el forward (0,1,0) del bullet (bullet.script):
+	--    rotate(quat_rotation_z(a), (0,1,0)) = (-sin a, cos a) → a = atan2(-dx, dy)
+	local base_angle = math.atan2(-dir.x, dir.y)
+	local half_cone = math.rad(self.cone_angle / 2)
+	local random_angle = base_angle + (math.random() - 0.5) * half_cone * 2
+	local particle_rot = vmath.quat_rotation_z(random_angle)
+	local speed = math.random(self.min_speed, self.max_speed)
+
+	local properties = { speed = speed, rotation = particle_rot }
+	factory.create("/player_spray#factory", emit_pos, particle_rot, properties)
+end
+
+function init(self)
+	-- Obtener valores desde game_state (que ya se ha cargado desde persistencia)
+	self.max_resources = game_state.get_global("max_spray") or 100
+	self.resources = game_state.get_global("spray_current")
+	if not self.resources then
+		self.resources = self.max_resources
+	end
+	-- Clampear por si el máximo se redujo mientras se guardó
+	if self.resources > self.max_resources then
+		self.resources = self.max_resources
+	end
+
+	-- Asegurar que game_state tenga el valor actual correcto
+	game_state.set_global("spray_current", self.resources)
+
+	-- Registrar callback para cambios en max_spray (por ejemplo, mejoras)
+	game_state.register_callback("max_spray", function(_, old, new)
+		on_max_spray_changed(self, old, new)
+	end)
+
+	-- También registrar callback para cambios en spray_current (recargas externas)
+	game_state.register_callback("spray_current", function(_, old, new)
+		self.resources = new
+		if self.resources > self.max_resources then
+			self.resources = self.max_resources
+			game_state.set_global("spray_current", self.resources)
+		end
+	end)
+
+	self.firing = false
+	self.firing_source = nil   -- "mouse" | "space" | "mobile" (origen del disparo actual)
+	-- 🪗 Histéresis del smart trigger (Fase 3): estado de la ventana de
+	--    gracia al perder el objetivo. no_target_timer acumula tiempo sin
+	--    objetivo; mobile_had_target recuerda si esta sesión de disparo
+	--    llegó a tener un objetivo real (solo entonces se concede la gracia).
+	self.no_target_timer   = 0
+	self.mobile_had_target = false
+	-- 🧍 Estado de muerte del jugador: lo sincroniza player.script con los
+	--    mensajes player_died / player_respawned. Mientras sea true, este
+	--    script ignora TODO input de disparo y no crea partículas (sin esto,
+	--    el jugador muerto podría seguir disparando: bug de muerte real).
+	self.player_dead = false
+	self.timer = 0
+	-- Vectores reutilizables (zero-alloc, estándar #2/#8):
+	--   aim_out      → aiming.get_direction (capa unificada)
+	--   auto_aim_out → auto_aim.find_nearest (Fase 3)
+	self.aim_out = vmath.vector3(0, 0, 0)
+	self.auto_aim_out = vmath.vector3(0, 0, 0)
+	self.prev_firing = false
+
+	-- 🔗 URLs cacheadas (regla #4)
+	self.player_url = msg.url("/player")
+	-- URL de la cámara para camera.screen_xy_to_world (mismo patrón que cursor.script)
+	self.camera_url = msg.url("/camera#camera")
+	msg.post(".", "acquire_input_focus")
+end
+
+function update(self, dt)
+	-- 🧍 Jugador muerto: nunca disparar (aunque un input residual dejara
+	--    firing = true, el guard de abajo lo corta antes de crear partículas).
+	if self.player_dead then
+		self.firing = false
+	end
+
+	-- 📱 Fase 3 — Auto-aim en móvil: refrescar la dirección al enemigo más
+	--    cercano MIENTRAS se mantiene pulsado el botón spray (sigue al
+	--    enemigo en movimiento). has_target controla el smart trigger.
+	local has_target = true
+	local in_grace = false
+	if self.firing and self.firing_source == "mobile" then
+		has_target = refresh_auto_aim(self)
+		if has_target then
+			self.mobile_had_target = true
+			self.no_target_timer = 0
+		else
+			-- 🪗 Histéresis: al perder el objetivo no se corta en seco — se
+			--    concede una ventana de gracia (config.AUTO_AIM_HYSTERESIS).
+			--    Durante la gracia se mantiene la ÚLTIMA dirección conocida
+			--    (auto_aim_out quedó con el último vector válido: find_nearest
+			--    no lo muta cuando devuelve nil), así un enemigo que oscila
+			--    en el borde del rango NO interrumpe ni el disparo ni el
+			--    sonido loop (sin titileo). Solo se concede la gracia si esta
+			--    sesión llegó a tener objetivo (mobile_had_target): pulsar
+			--    spray sin ningún enemigo en rango sigue sin gastar nada.
+			self.no_target_timer = self.no_target_timer + dt
+			in_grace = self.mobile_had_target and self.no_target_timer < config.AUTO_AIM_HYSTERESIS
+			if in_grace then
+				aiming.set_auto(self.auto_aim_out)
+			end
+		end
+	end
+
+	-- 🔫 Disparo efectivo: con SMART_TRIGGER y sin enemigo en rango (móvil),
+	--    no se dispara ni suena (protege el recurso). La histéresis mantiene
+	--    el disparo durante la ventana de gracia (si el objetivo reaparece
+	--    dentro de la ventana no hay ninguna interrupción). En escritorio
+	--    siempre dispara (click_right/space), igual que antes.
+	local firing_effective = self.firing
+	if self.firing_source == "mobile" and config.SMART_TRIGGER and not has_target and not in_grace then
+		firing_effective = false
+	end
+
+	if firing_effective and self.resources > 0 then
+		self.timer = self.timer + dt
+		if self.timer >= self.fire_rate then
+			self.timer = 0
+			fire_particle(self)
+		end
+	end
+
+	-- 🔊 Gestión de sonidos del spray (basada en el disparo EFECTIVO)
+	if firing_effective ~= self.prev_firing then
+		if firing_effective then
+			-- Empezó a disparar: sonido loop
+			sound.play("#spray")
+		else
+			-- Dejó de disparar: detener loop
+			sound.stop("#spray")
+			if self.resources <= 0 then
+				-- Recursos agotados: sonido de error una vez
+				sound.play("#spray_wrong")
+			end
+		end
+		self.prev_firing = firing_effective
+	end
+end
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	-- 🧍 Jugador muerto: ignorar todo input de disparo (mismo criterio que
+	--    player.script con el movimiento). Sin este gate, tras la muerte el
+	--    jugador podía rearmar firing con click_right/space y seguir
+	--    disparando + enviando attack_direction (que sobrescribía la animación
+	--    de muerte por la de ataque).
+	if self.player_dead then
+		return
+	end
+
+	-- 🎯 FUENTE MOUSE de la capa unificada (aiming.lua).
+	--    Conversión pantalla→mundo vía camera.screen_xy_to_world (patrón cursor.script,
+	--    GOTCHA #6: robusta ante resize/fullscreen HTML5). SIN espejo: la capa y
+	--    fire_particle ya usan direcciones REALES (doble espejo X resuelto).
+	--
+	--    El ratón se "arma" SOLO por intención explícita o durante el disparo CON RATÓN:
+	--      • click_right (press/release) → posición del clic (puntería explícita)
+	--      • movimiento de ratón MIENTRAS se dispara con click_right (firing_source
+	--        == "mouse") → kiting en vivo
+	--    IMPORTANTE (bug: Space mientras se mueve → dirección impredecible): si el
+	--    disparo es con key_space, el movimiento del ratón NO arma MOUSE. De lo
+	--    contrario, un evento de ratón espurio/incidental durante el disparo con
+	--    teclado fijaría MOUSE (persistente, prioridad máxima) en un punto arbitrario
+	--    del mundo, y la dirección rotaría al moverse el jugador. Con el guard
+	--    firing_source, key_space cae a FACING (dirección de movimiento) como diseño.
+	--    Los movimientos PASIVOS del ratón (sin disparar) tampoco alimentan la fuente.
+	if action_id == hash("click_right") and (action.pressed or action.released) then
+		local world_pos = camera.screen_xy_to_world(action.screen_x, action.screen_y, self.camera_url)
+		aiming.set_mouse(world_pos)
+	elseif self.firing and self.firing_source == "mouse" and not action_id and action.screen_x then
+		local world_pos = camera.screen_xy_to_world(action.screen_x, action.screen_y, self.camera_url)
+		aiming.set_mouse(world_pos)
+	end
+
+	-- Disparo: tanto click_right como key_space activan el spray.
+	-- firing_source distingue el origen ("mouse" vs "space"): solo el disparo
+	-- con ratón permite kiting (armar MOUSE con el movimiento del ratón en vivo).
+	if action_id == hash("click_right") or action_id == hash("key_space") then
+		if action.pressed then
+			self.firing = true
+			self.firing_source = action_id == hash("click_right") and "mouse" or "space"
+
+			-- Dirección real desde la capa unificada (siempre válida: cae a
+			-- facing/last_dir/(0,1,0) si no hay fuente activa).
+			local player_pos = go.get_world_position(self.player_url)
+			local dir = aiming.get_direction(player_pos, self.aim_out)
+			-- Copia para el mensaje (msg.post copia la tabla pero no el vector interno)
+			msg.post(self.player_url, "attack_direction", { direction = vmath.vector3(dir) })
+		elseif action.released then
+			self.firing = false
+			self.firing_source = nil
+			msg.post(self.player_url, "stop_attack")
+		end
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	-- 📱 Fase 3 — Botón spray táctil (web_controls). Contrato mantenido:
+	--    pressed=true → empezar a disparar (con auto-aim si hay enemigo),
+	--    pressed=false → soltar (detener + limpiar AUTO). Patrón click_right.
+	if message_id == hash("mobile_spray") then
+		if message.pressed then
+			-- 🧍 Mismo gate que handle_input: muerto no se dispara
+			if not self.player_dead then
+				self.firing = true
+				self.firing_source = "mobile"
+				-- 🪗 Sesión de disparo nueva: sin historial de objetivo previo
+				-- (no se hereda la gracia de una sesión anterior) ni timer.
+				self.mobile_had_target = false
+				self.no_target_timer = 0
+				-- Auto-aim inicial: que la primera ráfaga salga ya dirigida
+				refresh_auto_aim(self)
+				-- Dirección real desde la capa unificada para la animación
+				-- de ataque (igual que click_right/key_space).
+				local player_pos = go.get_world_position(self.player_url)
+				local dir = aiming.get_direction(player_pos, self.aim_out)
+				msg.post(self.player_url, "attack_direction", { direction = vmath.vector3(dir) })
+			end
+		else
+			self.firing = false
+			self.firing_source = nil
+			self.mobile_had_target = false
+			self.no_target_timer = 0
+			aiming.clear_auto()
+			msg.post(self.player_url, "stop_attack")
+		end
+		return
+	end
+
+	if message_id == hash("player_died") then
+		-- 🧍 Muerte del jugador (enviado por player.script en trigger_death):
+		--    cortar el disparo en seco y bloquear inputs futuros hasta que
+		--    llegue player_respawned. Reset manual del estado (sin depender
+		--    de que firing estuviera activo).
+		self.player_dead = true
+		self.firing = false
+		self.firing_source = nil
+		self.mobile_had_target = false
+		self.no_target_timer = 0
+		self.prev_firing = false
+		aiming.clear_auto()
+		sound.stop("#spray")
+
+	elseif message_id == hash("player_respawned") then
+		-- 🧍 Respawn (enviado por player.script en trigger_respawn): el jugador
+		--    vuelve a poder disparar.
+		self.player_dead = false
+	end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end

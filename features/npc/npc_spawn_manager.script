@@ -1,0 +1,192 @@
+-- features/npc/npc_spawn_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🎯 GESTOR DE SPAWN DE NPCs (contenedor spawn_npcs)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+--
+--   Sistema de posicionamiento por puntos de spawn en el editor:
+--     - El contenedor `spawn_npcs` (este GO) tiene como hijos
+--       `spawn_npc_cat`, `spawn_npc_01`..`spawn_npc_NN`, cuyas
+--       posiciones se colocan a mano en el editor.
+--     - Cada npc.script / cat.script registra su URL REAL (go.get_id())
+--       en main/npc_spawn_state.lua al iniciarse (GOTCHA #4: sin
+--       adivinar rutas anidadas).
+--     - Este gestor descubre los puntos de spawn por naming (mismo
+--       patrón que food_spawn_container) y coloca a cada NPC:
+--         • config.SHOW_ALL_NPCS = true → TODOS en su punto de spawn
+--         • config.SHOW_ALL_NPCS = false → desbloqueado → spawn point;
+--           bloqueado → staging (-100, 0, 0.1)
+--     - Al desbloquearse un NPC (game_state.unlock_npc), se notifica
+--       a este gestor ("npc_unlocked") y el NPC se reposiciona al instante.
+--
+--   NOTA: el gato ("cat") no tiene bloqueo: siempre se coloca en
+--   spawn_npc_cat (su visibilidad la controla cat.script con el
+--   radio de activación).
+
+local npc_spawn_state = require "main.npc_spawn_state"
+local game_state = require "main.game_state"
+local persistence = require "main.persistence"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_NPC_SPAWN = false
+local dprint = config.make_log(DEBUG_NPC_SPAWN)
+
+-- Posición fuera del mapa donde reposan los NPCs bloqueados
+-- (coincide con la posición de staging de las instancias del editor)
+local STAGING_POSITION = vmath.vector3(-100, 0, 0.1)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): initialize_spawns, discover_spawn_points,
+-- position_npc y apply_all_spawns están definidas MÁS ABAJO pero son llamadas
+-- desde update()/on_message()/initialize_spawns. Forward declaration: los
+-- callers las capturan como upvalues y las definiciones posteriores
+-- 'function X(self)' asignan a estos locales (patrón establecido del proyecto).
+local initialize_spawns
+local discover_spawn_points
+local position_npc
+local apply_all_spawns
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	npc_spawn_state.manager_url = msg.url()
+	self.is_initialized = false
+	self.npc_z = {}  -- z original de cada NPC (para preservar el orden de dibujo)
+end
+
+function update(self, dt)
+	if not self.is_initialized then
+		self.is_initialized = true
+		initialize_spawns(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 INICIALIZACIÓN DE SPAWNS
+-- ═══════════════════════════════════════════════════════
+
+-- Se ejecuta en el primer update() del gestor: para entonces TODOS los
+-- scripts del nivel ya han ejecutado su init() (Defold inicializa todos
+-- los GOs antes del primer update), así que los NPCs ya están registrados
+-- en npc_spawn_state.
+function initialize_spawns(self)
+	discover_spawn_points(self)
+
+	if next(npc_spawn_state.spawn_points) == nil then
+		print("[npc_spawn_manager] ⚠️ No se encontraron puntos de spawn (spawn_npc_cat, spawn_npc_01..NN)")
+		return
+	end
+
+	-- 🔓 Suscribirse al desbloqueo de NPCs: cuando game_state.unlock_npc()
+	--    desbloquee uno, este gestor lo coloca en su punto de spawn.
+	--    (El listener solo envía un mensaje; msg.url() se capturó en init,
+	--     sin depender del contexto de llamada del módulo.)
+	--    🚨 Solo UNA vez: game_state es un módulo persistente entre recargas
+	--    del nivel; re-registrar cada vez apilaría listeners duplicados.
+	if not npc_spawn_state.unlock_listener_registered then
+		npc_spawn_state.unlock_listener_registered = true
+		game_state.on_npc_unlocked(function(npc_id)
+			msg.post(npc_spawn_state.manager_url, "npc_unlocked", { npc_id = npc_id })
+		end)
+	end
+
+	apply_all_spawns(self)
+
+	dprint("[npc_spawn_manager] ✅ Posicionamiento inicial aplicado")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 DETECCIÓN DINÁMICA DE PUNTOS DE SPAWN
+-- ═══════════════════════════════════════════════════════
+
+-- Descubre los hijos del contenedor por naming (mismo patrón que
+-- food_spawn_container / spray_spawn_container). NO usa break: mientras
+-- el diseñador coloca los puntos a mano, pueden existir huecos (ej: 01 y
+-- 03 sin 02 todavía).
+function discover_spawn_points(self)
+	-- 🐱 Gato (nombre especial, no sigue el formato numérico)
+	if go.exists("spawn_npc_cat") then
+		local pos = go.get_position("spawn_npc_cat")
+		npc_spawn_state.register_spawn_point("cat", pos)
+	end
+
+	-- 🧍 NPCs numerados (spawn_npc_01..spawn_npc_NN)
+	for i = 1, persistence.NPC_COUNT do
+		local name = "spawn_npc_" .. string.format("%02d", i)
+		if go.exists(name) then
+			local npc_id = persistence.NPC_PREFIX .. string.format("%02d", i)
+			local pos = go.get_position(name)
+			npc_spawn_state.register_spawn_point(npc_id, pos)
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 COLOCAR UN NPC
+-- ═══════════════════════════════════════════════════════
+
+-- Coloca un NPC según su estado de desbloqueo:
+--   • desbloqueado + spawn point → se teletransporta al spawn point
+--   • desbloqueado + sin spawn   → se respeta la posición del editor
+--   • bloqueado                  → reposa en staging hasta desbloquearse
+-- Preserva la z original del NPC (capturada antes del primer movimiento):
+-- los sprites de los NPCs viven en z=0.1 y no deben cambiar de orden al
+-- teletransportarse.
+function position_npc(self, npc_id)
+	local url = npc_spawn_state.get_npc_url(npc_id)
+	if not url or not go.exists(url) then
+		return false
+	end
+
+	if self.npc_z[npc_id] == nil then
+		self.npc_z[npc_id] = go.get_position(url).z
+	end
+	local z = self.npc_z[npc_id]
+
+	local spawn = npc_spawn_state.get_spawn_point(npc_id)
+	-- SHOW_ALL_NPCS: en desarrollo se muestran todos los NPCs (el bloqueo por
+	-- desbloqueo solo paga si esconder ahorra lógica/render de verdad; con 14
+	-- NPCs el ahorro es despreciable → ver config.lua).
+	local unlocked = (npc_id == "cat") or config.SHOW_ALL_NPCS or game_state.is_npc_unlocked(npc_id)
+
+	local target
+	if unlocked and spawn then
+		target = vmath.vector3(spawn.x, spawn.y, z)
+	elseif unlocked then
+		-- Desbloqueado pero sin spawn point asignado: respetar la posición
+		-- del editor (cuidado: si el NPC estaba antes en staging porque estaba
+		-- bloqueado, se queda ahí hasta que exista su spawn point)
+		return true
+	else
+		target = vmath.vector3(STAGING_POSITION.x, STAGING_POSITION.y, z)
+	end
+
+	go.set_position(target, url)
+	-- 📣 Avisar al NPC para que re-ancle su patrulla al nuevo origen
+	msg.post(url, "npc_spawn_updated")
+	return true
+end
+
+-- Aplica el posicionamiento a todos los NPCs registrados
+function apply_all_spawns(self)
+	position_npc(self, "cat")
+	for _, npc_id in ipairs(persistence.get_all_npc_ids()) do
+		position_npc(self, npc_id)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("npc_unlocked") then
+		if message.npc_id and game_state.is_npc_unlocked(message.npc_id) then
+			position_npc(self, message.npc_id)
+			dprint("🎉 NPC apareció en el mapa: " .. message.npc_id)
+		end
+	end
+end

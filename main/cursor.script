@@ -1,0 +1,237 @@
+-- main/cursor.script
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ CURSOR — DETECCIÓN DE INTERACCIÓN
+-- ═══════════════════════════════════════════════════════
+--
+--   Detecta clics/hover sobre objetos interactuables (trigger
+--   + mask "interactivable") y envía "interact" al MÁS CERCANO
+--   al cursor. En táctil está NEUTRALIZADO (Fase 5): la
+--   interacción móvil pasa al botón option (mobile_interact).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "interact"/"mouse_hover" (hacia el objeto FRONTAL: mayor z, desempate por distancia)
+--   Mensajes que RECIBE (on_message):
+--     ← "input_event"        (desde scene_manager)
+--     ← "trigger_response"   (entrada/salida de hover)
+--     ← "collision_response"/"contact_point_response" (fallback)
+--
+--   ℹ️ El tracking de hover usa self.hovered (trigger enter/exit)
+--   y hay un safety net: clic justo al entrar en el trigger.
+--
+--   ⚠️ Input vía mensajes: acquire_input_focus no funciona en
+--   collection proxies (on_input queda como fallback futuro).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local platform = require "main.platform"
+local config = require "main.config"
+local interactable_box = require "main.interactable_box"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_CURSOR = false
+local dprint = config.make_log(DEBUG_CURSOR)
+
+-- ============================================
+-- 📏 GATE GLOBAL DE DISTANCIA (interaction_range, main/config.lua)
+-- ============================================
+-- El jugador solo puede resaltar/interactuar con objetos dentro del rango,
+-- medido contra el PUNTO DE INTERACCIÓN del objeto (interactable_box.world_point
+-- — registrado por puertas/armarios, fallback al GO; GOTCHA #31). Sin este
+-- gate, el cursor de escritorio interactuaba con cualquier objeto visible en
+-- pantalla desde cualquier distancia (Ago 2026). Si el jugador no existe
+-- (estado raro), se bloquea la interacción (no hay quien interactúe).
+-- 📏 Distancia jugador → punto de interacción (interactable_box.world_point).
+local function player_distance(self, url)
+	if not go.exists(self.player_url) then return math.huge end
+	local player_pos = go.get_position(self.player_url)
+	local obj_pos = interactable_box.world_point(url)
+	local dx = obj_pos.x - player_pos.x
+	local dy = obj_pos.y - player_pos.y
+	return math.sqrt(dx * dx + dy * dy)
+end
+
+local function is_player_in_range(self, url)
+	return player_distance(self, url) <= self.interaction_range
+end
+
+-- ============================================
+-- INPUT HANDLER (llamado desde on_message("input_event") y on_input como fallback)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	-- 📱 Fase 5: en táctil el cursor está neutralizado. Un toque en móvil
+	-- dispara también los actions single-touch (click) — si los procesáramos,
+	-- el cursor estático interactuaría con objetos al pulsar la GUI.
+	if self.touch_active then return end
+
+	-- Mover el cursor con el mouse
+	if not action_id then
+		local world_pos = camera.screen_xy_to_world(action.screen_x, action.screen_y, self.camera_component_url)
+		go.set_position(world_pos)
+		return
+	end
+
+	-- Detectar la pulsación del clic
+	if action_id == hash("click") then
+		if action.pressed then
+			-- ⚠️ Guardia anti-doble-procesamiento: si on_input llegase a dispararse
+			--    dentro del proxy (comportamiento no documentado), evitamos procesar
+			--    el mismo clic dos veces. self.clicked se mantiene true hasta release.
+			if self.clicked then
+				return
+			end
+			self.clicked = true
+
+			-- 🖱️ Buscar el objeto a INTERACTUAR entre los que están en hover.
+			--    Gana el de MAYOR z (el visualmente delante según el depth test del
+			--    motor) y, a z igual, el más cercano al cursor. Motivo (GOTCHA #31):
+			--    la física es 2D (ignora z) y el z es el mecanismo de ocultación
+			--    del proyecto. El caso bote-en-armario ya lo resuelve la ACTIVACIÓN
+			--    (Ago 2026: el bote cubierto está desactivado → ni entra en hover);
+			--    z-first queda como defensa para cualquier solape residual entre
+			--    objetos a distinto z (p. ej. un bote a z 0.22 frente al armario
+			--    en z 0.19). A z igual, la distancia desempata (p. ej. gato vs
+			--    bookcase, ambos z 0 → mismo comportamiento que antes).
+			local cursor_pos = go.get_position()
+			local closest_url = nil
+			local closest_z = -math.huge
+			local closest_dist = math.huge
+			for _, url in pairs(self.hovered) do
+				-- 📏 Re-validar el rango en el clic: el jugador pudo alejarse
+				-- DESPUÉS de que el hover entrara (el enter ya filtró por rango).
+				if go.exists(url) and is_player_in_range(self, url) then
+					local obj_pos = go.get_position(url)
+					if obj_pos.z > closest_z then
+						closest_z = obj_pos.z
+						closest_dist = vmath.length(obj_pos - cursor_pos)
+						closest_url = url
+					elseif obj_pos.z == closest_z then
+						local dist = vmath.length(obj_pos - cursor_pos)
+						if dist < closest_dist then
+							closest_dist = dist
+							closest_url = url
+						end
+					end
+				end
+			end
+			if closest_url then
+				dprint("🎯 Cursor detectó interacción (hover) con: " .. tostring(closest_url) .. " (dist=" .. math.floor(closest_dist) .. ")")
+				msg.post(closest_url, "interact")
+				self._input_processed = true
+				-- self.clicked se mantiene true para que el safety net no interfiera
+				return
+			end
+			-- Si no hay objeto en hover, self.clicked queda true para el safety net
+			-- (clic en vacío + luego mover cursor sobre objeto → trigger_response enter)
+		elseif action.released then
+			self.clicked = false
+			self._input_processed = false
+		end
+	end
+end
+
+function init(self)
+	msg.post(".", "acquire_input_focus")  -- fallback (no funciona en proxies, pero por si acaso)
+	self.camera_component_url = msg.url("/camera#camera")
+	self.clicked = false
+	self.hovered = {}              -- { [tostring(url)] = url } — objetos bajo el cursor
+	self._input_processed = false  -- guardia anti-doble-procesamiento
+
+	-- 📏 Gate global de distancia (main/config.lua → M.balance.interaction_range).
+	-- El jugador está en level_01 como "/player" (mismo patrón que npc.script).
+	self.player_url = msg.url("/player")
+	self.interaction_range = config.balance.interaction_range or 80
+
+	-- 📱 Fase 5: neutralizar el cursor en táctil. Desactivar el collision
+	-- object evita trigger_response (ni hover ni interact fantasma desde el
+	-- cursor estático). El clic single-touch del móvil ya no interactúa con
+	-- el mundo: eso lo hace el botón option (sensor mobile_interact).
+	self.touch_active = platform.is_touch()
+	if self.touch_active then
+		msg.post("#collisionobject", "disable")
+	end
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+function on_message(self, message_id, message, sender)
+	-- 📱 Fase 5: en táctil el cursor está neutralizado (collision object
+	-- desactivado en init + sin manejo de input). Defensa en profundidad:
+	-- si llegara un mensaje residual, no se procesa nada.
+	if self.touch_active then return end
+
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	-- trigger_response: el cursor es COLLISION_OBJECT_TYPE_TRIGGER, así que
+	-- solo este mensaje se recibe al solaparse con objetos interactuables
+	-- (collision_response / contact_point_response NO se envían para triggers).
+	if message_id == hash("trigger_response") then
+		-- 1. Hover: notificar entrada/salida del área
+		local other_str = tostring(message.other_id)
+		if message.enter then
+			-- 📏 Gate de distancia: fuera de rango → ni se trackea ni se resalta
+			-- (el clic tampoco lo procesaría). Si el jugador se acerca con el
+			-- cursor ya encima, el highlight llega al re-entrar (wart conocido).
+			if not is_player_in_range(self, message.other_id) then
+				self.hovered[other_str] = nil
+				return
+			end
+			msg.post(message.other_id, "mouse_hover", { enter = true })
+
+			-- 2. Rastrear objetos en hover para detección de clics
+			self.hovered[other_str] = message.other_id
+		else
+			-- Solo notificar salida si estaba trackeado (el enter pudo ser
+			-- bloqueado por rango — un exit sin enter previo sería espurio).
+			if self.hovered[other_str] then
+				msg.post(message.other_id, "mouse_hover", { enter = false })
+				self.hovered[other_str] = nil
+			end
+		end
+
+		-- 3. Red de seguridad: clic justo al entrar en el trigger
+		--    (cuando el usuario hace clic ANTES de que el cursor entre al área).
+		--    Solo se activa si el clic NO fue ya procesado por handle_input
+		--    (self._input_processed = false).
+		--    NOTA: ponemos self.clicked = false (en vez de _input_processed = true)
+		--    porque con self.clicked = false el guardia ya impide re-disparo.
+		if self.clicked and not self._input_processed and message.enter and message.group == hash("interactivable") then
+			dprint("🎯 Cursor detectó interacción (trigger enter) con: " .. tostring(message.other_id))
+			msg.post(message.other_id, "interact")
+			self.clicked = false
+		end
+		return
+	end
+
+	-- collision_response / contact_point_response:
+	-- ⚠️ GOTCHA (verificado por diagnóstico Ago 2026): NO es código muerto. En
+	-- la práctica el cursor (TRIGGER) SÍ recibe estos mensajes al solaparse con
+	-- interactables KINEMATIC — el fallback disparaba interact a CUALQUIER
+	-- distancia (el clic en vacío dejaba self.clicked=true y el mensaje de
+	-- colisión lo liberaba sin gate de rango: ME_5225 interactuado a 285 uds
+	-- con range=80). Sin este gate, el rango global de interacción no se
+	-- aplicaba al clic por ratón (solo al hover). Mismo guardia que el safety
+	-- net (solo si el clic no fue ya procesado) + GATE DE DISTANCIA.
+	if self.clicked and not self._input_processed then
+		if message_id == hash("collision_response") or message_id == hash("contact_point_response") then
+			if message.group == hash("interactivable") and is_player_in_range(self, message.other_id) then
+				dprint("🎯 Cursor detectó interacción (collision) con: " .. tostring(message.other_id))
+				msg.post(message.other_id, "interact")
+				self.clicked = false
+			end
+		end
+	end
+end

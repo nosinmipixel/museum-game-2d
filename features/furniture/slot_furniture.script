@@ -1,0 +1,290 @@
+-- features/furniture/slot_furniture.script
+-- ═══════════════════════════════════════════════════════
+-- 🎯 SLOT INDIVIDUAL (ESTANTERÍA / VITRINA)
+-- ═══════════════════════════════════════════════════════
+--
+--   Este script es para slot_shelf.go y slot_showcase.go.
+--   Cada GO representa UN único slot (1 objeto = 1 slot).
+--
+--   Sustituye a furniture.script para la interacción con
+--   slots independientes, eliminando la necesidad de muebles
+--   con múltiples slots internos.
+--
+--   go.property("slot_type", hash("shelf"))  → "shelf" o "showcase"
+--   go.property("period", hash("pal"))        → pal, neo, bro, ibe, rom
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+-- Valores válidos: "shelf" (estantería), "showcase" (vitrina)
+go.property("slot_type", hash("shelf"))
+-- Valores válidos: "pal", "neo", "bro", "ibe", "rom"
+go.property("period", hash("pal"))
+
+local game_state = require "main.game_state"
+local collectibles_data = require "main.collectibles_data"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_SLOT_FURNITURE = false
+local dprint = config.make_log(DEBUG_SLOT_FURNITURE)
+
+-- 🌐 Recarga los textos localizados del hover (text_alert). Definida ANTES de
+--    init para que init y el callback de idioma la capturen como upvalue
+--    (GOTCHA #1).
+local function load_texts(self)
+	self.texts = text_loader.load("general") or {}
+end
+
+-- Colores para hover (aplicados al slot_sprite_1)
+local TINT_NORMAL = vmath.vector4(1, 1, 1, 1)        -- Sin hover
+local TINT_CORRECT = vmath.vector4(0.5, 1.5, 0.5, 1)  -- Periodo coincide (verde luminoso)
+local TINT_WRONG = vmath.vector4(1.5, 0.5, 0.5, 1)    -- Periodo no coincide (rojizo)
+local TINT_HOVER_COMPLETED = vmath.vector4(1.25, 1.25, 1.25, 1)  -- 🖼️ Brillo neutro (objeto ya exhibido)
+
+-- Tablas de lookup para convertir hashes a strings
+local SLOT_TYPE_STR = {
+	[hash("shelf")] = "shelf",
+	[hash("showcase")] = "showcase",
+}
+local PERIOD_STR = {
+	[hash("pal")] = "pal",
+	[hash("neo")] = "neo",
+	[hash("bro")] = "bro",
+	[hash("ibe")] = "ibe",
+	[hash("rom")] = "rom",
+}
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): estas funciones están definidas MÁS ABAJO en
+-- el archivo pero son llamadas desde init/on_message (set_slot_sprite,
+-- on_mouse_hover, notify_manager) y desde on_mouse_hover (apply/reset_hover_tint,
+-- show/hide_hover_alert). Forward declaration: los callers las capturan como
+-- upvalues y las definiciones posteriores asignan a estos locales.
+local set_slot_sprite
+local on_mouse_hover
+local apply_hover_tint
+local reset_hover_tint
+local show_hover_alert
+local hide_hover_alert
+local notify_manager
+
+function init(self)
+	self.slot_state = "empty"  -- "empty", "storage", "exhibition", "in_transit", "completed"
+	self.item_id = nil  -- 🖼️ ID del objeto que ocupa el slot (lo envía el manager en update_slot)
+
+	-- Referencia al sprite del slot (único: slot_sprite_1)
+	self.sprite_url = msg.url(nil, go.get_id(), hash("slot_sprite_1"))
+
+	-- 🔗 URL del HUD cacheada (regla #4)
+	self.hud_url = msg.url("/gui#hud")
+
+	-- 🌐 Textos localizados del hover (text_alert)
+	load_texts(self)
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_texts(self)
+		dprint("[SlotFurniture] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	-- Inicializar sprite como vacío
+	set_slot_sprite(self, "empty")
+
+	-- Estado de hover
+	self.is_hovered = false
+end
+
+--- Cambia el sprite del slot según el estado
+function set_slot_sprite(self, state, sprite_id)
+	if not go.exists(self.sprite_url) then return end
+
+	if state == "empty" then
+		sprite.play_flipbook(self.sprite_url, hash("0000"))
+		go.set(self.sprite_url, "tint", vmath.vector4(1, 1, 1, 0.3))  -- Semi-transparente
+	elseif state == "storage" or state == "exhibition" then
+		if sprite_id then
+			sprite.play_flipbook(self.sprite_url, hash(sprite_id))
+		end
+		go.set(self.sprite_url, "tint", vmath.vector4(1, 1, 1, 1))  -- Visible completo
+	elseif state == "in_transit" then
+		-- Estado "cortado": sprite semi-transparente (como archivo cortado en explorador)
+		if sprite_id then
+			sprite.play_flipbook(self.sprite_url, hash(sprite_id))
+		end
+		go.set(self.sprite_url, "tint", vmath.vector4(1, 1, 1, 0.25))  -- Muy semi-transparente
+	elseif state == "completed" then
+		if sprite_id then
+			sprite.play_flipbook(self.sprite_url, hash(sprite_id))
+		end
+		go.set(self.sprite_url, "tint", vmath.vector4(0.8, 1, 0.8, 1))  -- Tono verde (completado)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("update_slot") then
+		-- Actualizar el sprite del slot con el objeto depositado
+		local sprite_id = message.sprite_id
+		local state = message.state
+
+		self.slot_state = state
+		self.item_id = message.item_id  -- 🖼️ Para hover: saber qué objeto exhibe este slot
+		set_slot_sprite(self, state, sprite_id)
+		dprint("[SlotFurniture] Slot actualizado a estado: " .. state)
+
+	elseif message_id == hash("clear_slot") then
+		self.slot_state = "empty"
+		self.item_id = nil
+		set_slot_sprite(self, "empty")
+		dprint("[SlotFurniture] Slot vaciado")
+
+	elseif message_id == hash("mouse_hover") then
+		on_mouse_hover(self, message.enter)
+
+	elseif message_id == hash("interact") then
+		-- Mensaje enviado por cursor.script al colisionar + clic
+		notify_manager(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: TINT Y ALERTA
+-- ═══════════════════════════════════════════════════════
+
+function on_mouse_hover(self, entering)
+	if entering and not self.is_hovered then
+		self.is_hovered = true
+		apply_hover_tint(self)
+		show_hover_alert(self)
+	elseif not entering and self.is_hovered then
+		self.is_hovered = false
+		reset_hover_tint(self)
+		hide_hover_alert(self)
+	end
+end
+
+function apply_hover_tint(self)
+	if not go.exists(self.sprite_url) then return end
+
+	local is_active = game_state.get_global("inventory_current_item_active")
+	if not is_active then
+		-- No hay objeto activo: no hacer nada especial
+		return
+	end
+
+	-- 🖼️ Slot con objeto ya exhibido (COMPLETED): el objeto está en su posición
+	-- final — el tint de periodo correcto/incorrecto no aplica. En su lugar, un
+	-- brillo neutro (blanco luminoso) sin connotación de acierto/error.
+	local items_status = game_state.get_global("inventory_items_status") or {}
+	if self.item_id and items_status[self.item_id] == "completed" then
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, TINT_HOVER_COMPLETED, go.EASING_OUTQUAD, 0.15)
+		return
+	end
+
+	local item_period = game_state.get_global("inventory_current_item_period")
+	local slot_period_str = collectibles_data.hash_to_str(self.period)
+
+	if item_period == slot_period_str then
+		-- Periodo correcto: tint verde luminoso
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, TINT_CORRECT, go.EASING_OUTQUAD, 0.15)
+	else
+		-- Periodo incorrecto: tint rojizo
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, TINT_WRONG, go.EASING_OUTQUAD, 0.15)
+	end
+end
+
+function reset_hover_tint(self)
+	if not go.exists(self.sprite_url) then return end
+	-- Restaurar al tint correspondiente al estado actual (no siempre NORMAL)
+	local tint_to_restore = TINT_NORMAL
+	if self.slot_state == "completed" then
+		tint_to_restore = vmath.vector4(0.8, 1, 0.8, 1)
+	elseif self.slot_state == "in_transit" then
+		tint_to_restore = vmath.vector4(1, 1, 1, 0.25)
+	elseif self.slot_state == "empty" then
+		tint_to_restore = vmath.vector4(1, 1, 1, 0.3)
+	end
+	go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, tint_to_restore, go.EASING_OUTQUAD, 0.15)
+end
+
+function show_hover_alert(self)
+	local is_active = game_state.get_global("inventory_current_item_active")
+	local period_key = collectibles_data.hash_to_str(self.period)
+
+	-- 🌐 Textos localizados (general_text_[lan].lua → M.inventory). El nombre
+	--    del periodo en texto es el localizado; display_name de
+	--    collectibles_data queda solo como fallback.
+	local inv = (self.texts and self.texts.inventory) or {}
+	local periods = inv.periods or {}
+	local period_name = periods[period_key]
+		or (collectibles_data.periods[period_key] and collectibles_data.periods[period_key].display_name)
+		or period_key
+
+	-- Determinar nombre del tipo de slot (localizado)
+	local slot_type_str = SLOT_TYPE_STR[self.slot_type] or tostring(self.slot_type)
+	local type_name = (slot_type_str == "showcase") and (inv.slot_showcase or "Vitrina") or (inv.slot_shelf or "Estantería")
+
+	-- Feedback de periodo (localizado)
+	local period_correct_txt = inv.period_correct or "Periodo correcto"
+	local period_incorrect_txt = inv.period_incorrect or "Periodo incorrecto"
+
+	-- 🖼️ Slot con objeto ya exhibido (COMPLETED): la advertencia de periodo
+	-- correcto/incorrecto no aplica — el objeto está en su posición final.
+	-- En su lugar, mostrar el nombre del objeto expuesto (sin ✗/✓).
+	local items_status = game_state.get_global("inventory_items_status") or {}
+	if self.item_id and items_status[self.item_id] == "completed" then
+		local item_data = collectibles_data.items[self.item_id]
+		-- 🏺 Nombre localizado (general_text → inventory.item_names); el name de
+		--    collectibles_data (español) queda como fallback.
+		local item_name = (inv.item_names and inv.item_names[self.item_id])
+			or (item_data and item_data.name)
+			or tostring(self.item_id)
+		local alert_txt = string.format("%s: %s — %s", type_name, period_name, item_name)
+		msg.post(self.hud_url, "show_persistent_alert", { text = alert_txt })
+		return
+	end
+
+	if is_active then
+		local item_period = game_state.get_global("inventory_current_item_period")
+
+		if item_period == period_key then
+			-- Coincide: mostrar información positiva
+			local alert_txt = string.format("%s: %s — %s", type_name, period_name, period_correct_txt)
+			msg.post(self.hud_url, "show_persistent_alert", { text = alert_txt })
+		else
+			-- No coincide
+			local alert_txt = string.format("%s: %s — %s", type_name, period_name, period_incorrect_txt)
+			msg.post(self.hud_url, "show_persistent_alert", { text = alert_txt })
+		end
+	else
+		-- No hay objeto activo: mostrar solo la información del slot
+		local alert_txt = string.format("%s: %s", type_name, period_name)
+		msg.post(self.hud_url, "show_persistent_alert", { text = alert_txt })
+	end
+end
+
+function hide_hover_alert(self)
+	msg.post(self.hud_url, "hide_persistent_alert")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📤 NOTIFICAR AL MANAGER
+-- ═══════════════════════════════════════════════════════
+
+function notify_manager(self)
+	-- Enviar evento al Inventory Manager usando tablas de lookup
+	local slot_type_str = SLOT_TYPE_STR[self.slot_type] or tostring(self.slot_type)
+	local period_str = PERIOD_STR[self.period] or tostring(self.period)
+
+	msg.post("/inventory_manager", "furniture_clicked", {
+		url = go.get_id(),
+		furniture_type = slot_type_str,  -- Mantiene "furniture_type" para compatibilidad con inventory_manager
+		period = period_str
+	})
+	dprint("[SlotFurniture] Clic enviado al Manager. Tipo: " .. slot_type_str
+		.. " Periodo: " .. period_str)
+end

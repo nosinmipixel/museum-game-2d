@@ -1,0 +1,386 @@
+-- main/spawn_enemies.script
+-- ═══════════════════════════════════════════════════════
+-- 🪳 SPAWN ESCALONADO DE ENEMIGOS
+-- ═══════════════════════════════════════════════════════
+--
+--   Los enemigos se crean de forma escalonada (uno cada `spawn_interval`
+--   segundos) en lugar de todos a la vez, para evitar saturar el buffer
+--   de sonido (32 slots) y el sistema de instanciación del engine.
+--
+--   Cada enemigo tiene 3 componentes de sonido (walk, attack, death),
+--   así que con `total_enemies` enemigos son total_enemies × 3 slots. Al
+--   espaciarlos, los sonidos de uno ya se han liberado cuando aparece el
+--   siguiente.
+--
+--   ⚙️ CONFIGURABLE DESDE EL EDITOR (go.property):
+--     • total_enemies  → nº de enemigos a crear
+--     • spawn_interval → segundos entre cada aparición (escalonado)
+--     • enemy_type     → "cockroach" (bug_factory) | "rat" (rat_factory)
+--                       | "mix" (alternado: impar → cucaracha, par → rata)
+--     • spawn_radius   → radio de dispersión aleatoria alrededor del trigger
+--
+--   Cada GO spawn_enemies duplicado en el editor se configura de forma
+--   independiente (p. ej. "4 cucarachas cada 0.3s" o "2 ratas cada 1s").
+--
+--   🎲 FASE 3 — RANGOS ALEATORIOS (NEST_SYSTEM_PLAN §6):
+--     • Propiedades _max opcionales (total_enemies_max, spawn_interval_max,
+--       spawn_radius_max, reactivate_delay_max): si x_max > x, CADA oleada
+--       tira un valor uniforme en [x, x_max]. x_max = 0 (default) o ≤ x →
+--       comportamiento original idéntico (backwards-compatible; los spawners
+--       del editor no cambian si no se configuran).
+--     • use_nest_ranges = true (solo nest.go): el spawner es un nido y lee
+--       los rangos de config.balance.nest_ranges (factory sin config por
+--       instancia en el editor). El tipo de enemigo se elige UNA vez por nido;
+--       el resto se tira por oleada igual que con _max.
+--
+--   🔁 REACTIVACIÓN PERIÓDICA (reactivate_delay):
+--     • reactivate_delay = 0  → one-shot (comportamiento original): el trigger
+--       se desactiva tras la primera oleada y nunca vuelve a disparar.
+--     • reactivate_delay > 0  → tras ese tiempo (segundos) el trigger se
+--       re-activa y lanza otra oleada si el jugador sigue dentro del radio
+--       (activation_radius). Oleadas periódicas mientras el jugador esté en
+--       la zona. ⚠️ En Defold, re-habilitar un trigger NO regenera el evento
+--       enter para objetos ya superpuestos → se comprueba por distancia,
+--       mismo patrón de fallback por proximidad de las zonas.
+--
+--   🐀 NOTA sobre las ratas: enemy_rat.go tiene su propia IA desde Ago 2026
+--   (features/enemy_rat/enemy_rat.script — embestida telegrafiada). Spawnear
+--   "rat" crea la instancia, la registra en enemy_state (el gato la detecta
+--   y la ataca) y se comporta como enemigo de pleno derecho. Ver
+--   docs/PROJECT_SUMMARY.md §6.2.
+--
+--   ⚠️ ACUMULACIÓN (por diseño): con reactivate_delay > 0, cada oleada suma
+--   total_enemies MÁS a los enemigos aún vivos de oleadas anteriores — no hay
+--   límite de vivos. Con valores moderados y el buffer de sonido a 256 no hay
+--   problema; si se usaran valores altos, habría que añadir un guard max_alive.
+--   🚶 Desde Ago 2026 los NIDOS tienen techo natural: sus enemigos (flag
+--   from_nest) desaparecen por distancia si el jugador se aleja sin
+--   interactuar (balance.nest.enemy_despawn_distance; ver enemy_cockroach /
+--   enemy_rat). Los spawners standalone del editor mantienen la acumulación
+--   original (son encuentros one-shot diseñados).
+--
+--   🧍 EMISIÓN PAUSADA MIENTRAS EL JUGADOR ESTÁ MUERTO:
+--     • player.script pone enemy_state.waves_paused = true en trigger_death
+--       (y false al resucitar de verdad). Este script sincroniza
+--       self.player_dead en update() y desactiva el trigger; los callbacks
+--       de los timers también consultan la flag antes de crear (doble
+--       comprobación, defensa en profundidad).
+--     • Motivo: sin esto, los timer.delay pendientes de una oleada seguían
+--       emitiendo tras la muerte; si una emisión coincidía con el clic de
+--       Reintentar (clear_alive ya ejecutado), el enemigo nuevo sobrevivía
+--       a la limpieza y seguía atacando al resucitar.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("total_enemies", 3)      -- Nº de enemigos a crear
+go.property("spawn_interval", 2.5)   -- Segundos entre cada aparición
+-- ⚠️ hash (no string): el panel Properties del editor no muestra go.property
+-- de tipo string; como hash, el editor la expone como campo de texto editable
+-- (escribir "cockroach" o "rat" → en runtime llega como hash).
+go.property("enemy_type", hash("cockroach"))  -- hash("cockroach") | hash("rat") | hash("mix")
+go.property("spawn_radius", 15)      -- Radio de dispersión aleatoria (px)
+go.property("reactivate_delay", 30)  -- 0 = one-shot · >0 = re-activar trigger tras N segundos (default 30s entre oleadas)
+go.property("activation_radius", 50)  -- Radio para la comprobación por distancia al re-activar (coincide con el shape del trigger)
+-- 🎲 FASE 3 (NEST_SYSTEM_PLAN §6): rangos opcionales _max (backwards-compatible).
+--    Si x_max > x, cada oleada tira un valor uniforme en [x, x_max]; si x_max
+--    es 0 (default) o ≤ x, comportamiento original idéntico. Los spawners del
+--    editor pueden configurarlos en el panel Properties; los nidos en cambio
+--    usan config.balance.nest_ranges (ver use_nest_ranges abajo).
+go.property("total_enemies_max", 0)      -- si > total_enemies → 3..5 por oleada
+go.property("spawn_interval_max", 0)     -- si > spawn_interval → 2.5..5.0 s entre apariciones
+go.property("spawn_radius_max", 0)       -- si > spawn_radius → 15..30 px de dispersión
+go.property("reactivate_delay_max", 0)   -- si > reactivate_delay → 8..20 s entre oleadas
+-- 🪺 Fase 3: true en nest.go → este spawner es un nido y lee los rangos de
+--    config.balance.nest_ranges (los nidos son instancias de factory sin
+--    configuración por instancia en el editor). false (default) → solo _max.
+go.property("use_nest_ranges", false)
+
+local enemy_state = require "main.enemy_state"
+local nest_spawn_state = require "main.nest_spawn_state"
+local config = require "main.config"
+
+-- ⚔️ SONIDO DE PELEA (background_fight_1)
+--    La detección de "oleada viva" vive AQUÍ (level_01), donde enemy_state
+--    es fiable — mismo contexto que el gato/cat.script — y se notifica al
+--    audio_manager de bootstrap por MENSAJE (patrón cross-collection del
+--    proyecto: mensajes, no sondear módulos del proxy desde bootstrap).
+--    ⚠️ Si se DUPLICA este GO en el editor, cada instancia sondearía: los
+--    mensajes son idempotentes (mismo estado desde el módulo compartido),
+--    así que es inofensivo pero ligeramente redundante.
+--    🎯 RADIO DE COMBATE (GOTCHA #28): desde Ago 2026 los enemigos estáticos
+--    del editor también se registran en enemy_state (GOTCHA #26), así que un
+--    recuento sin distancia contaba la cucaracha estática de level_01
+--    (~1380 uu del spawn) → fight sonaba desde el PRIMER frame del nivel.
+--    Ahora solo cuenta enemigos vivos dentro de config.FIGHT_COMBAT_RADIUS
+--    del jugador, con HISTÉRESIS espacial (salir a radio × 1.25) para que un
+--    enemigo que oscila en el borde no haga titilar el play/stop (mismo
+--    patrón que PROXIMITY_HYSTERESIS de la cucaracha y AUTO_AIM_HYSTERESIS).
+local FIGHT_POLL_INTERVAL = 0.5  -- cadencia del sondeo (barato: 1 msg/0.5s)
+local AUDIO_MANAGER_URL = "bootstrap:/audio_manager#manager"
+-- 🪗 Histéresis espacial del fight: salir requiere radio × FIGHT_EXIT_FACTOR.
+local FIGHT_EXIT_FACTOR = 1.25
+
+-- Mapa tipo de enemigo → id del componente factory en este GO.
+-- Los factories viven como embedded_components en el GO spawn_enemies
+-- (level_01.collection): bug_factory → cucaracha, rat_factory → rata.
+-- Claves HASH (no string): self.enemy_type llega como hash desde go.property.
+local FACTORY_BY_TYPE = {
+	[hash("cockroach")] = "bug_factory",
+	[hash("rat")] = "rat_factory",
+}
+
+-- 🎲 Factory del i-ésimo enemigo de la oleada (Ago 2026).
+--    • "cockroach" / "rat"  → su factory fijo (mapa de arriba).
+--    • "mix"                 → ALTERNADO: impar → cucaracha, par → rata
+--      (si el total es impar, el excedente es del primer tipo).
+--    • cualquier otro valor   → bug_factory (fallback, comportamiento original).
+--    El resto de características de la oleada (delay escalonado, radio de
+--    dispersión, reactivación, guards de muerte) aplican por igual a cada
+--    enemigo, sea cual sea su tipo.
+local function factory_for_spawn(self, i)
+	if self.enemy_type == hash("mix") then
+		return (i % 2 == 1) and "bug_factory" or "rat_factory"
+	end
+	return FACTORY_BY_TYPE[self.enemy_type] or "bug_factory"
+end
+
+-- 🎲 FASE 3 (NEST_SYSTEM_PLAN §6): valor de oleada desde un rango.
+--    Devuelve un valor uniforme en [min_val, max_val]; si no hay rango real
+--    (max_val ≤ min_val o nil), devuelve el valor base sin tocar (comportamiento
+--    original). Con is_integer usa math.random(a, b) (solo enteros); si no,
+--    interpolación con math.random() (floats, p. ej. spawn_interval).
+local function roll_range(base, min_val, max_val, is_integer)
+	if max_val and max_val > min_val then
+		if is_integer then
+			return math.random(min_val, max_val)
+		end
+		return min_val + math.random() * (max_val - min_val)
+	end
+	return base
+end
+
+-- Guard anti-reentrada: evita que spawn_enemies se ejecute dos veces en el
+-- mismo frame (p. ej. trigger_response enter llegando justo cuando el timer
+-- de reactivación lanza su oleada por distancia). Se libera cuando termina
+-- la última creación escalonada (is_last, capturado por valor: cada iteración
+-- del bucle tiene SU PROPIA copia — footgun de Lua 5.1 evitado).
+local function spawn_enemies(self, position)
+	if self.wave_active then return end
+	-- 🧍 No emitir mientras el jugador esté muerto (flag de módulo + copia
+	--    local sincronizada en update(); la doble comprobación cierra el
+	--    window de 1 frame entre el trigger_response y el update()).
+	if self.player_dead or enemy_state.is_waves_paused() then return end
+	-- 🪺 Si este spawner pertenece a un nido destruido, no emitir
+	if nest_spawn_state.is_destroyed(go.get_id()) then return end
+	self.wave_active = true
+
+	-- 🎲 FASE 3: valores de ESTA oleada (cada oleada re-tira). Dos fuentes:
+	--    • self.nest_ranges (nido, desde config.balance.nest_ranges) — si la
+	--      clave falta, roll_range devuelve el base del .go → fallback seguro.
+	--    • propiedades _max del editor (spawner standalone) — si x_max ≤ x, el
+	--      comportamiento es idéntico al original (backwards-compatible).
+	local ranges = self.nest_ranges
+	local total, interval, radius, reactivate
+	if ranges then
+		total     = roll_range(self.total_enemies,  ranges.total_enemies    and ranges.total_enemies.min,    ranges.total_enemies    and ranges.total_enemies.max,    true)
+		interval  = roll_range(self.spawn_interval, ranges.spawn_interval   and ranges.spawn_interval.min,   ranges.spawn_interval   and ranges.spawn_interval.max,   false)
+		radius    = roll_range(self.spawn_radius,   ranges.spawn_radius     and ranges.spawn_radius.min,     ranges.spawn_radius     and ranges.spawn_radius.max,     true)
+		reactivate = roll_range(self.reactivate_delay, ranges.reactivate_delay and ranges.reactivate_delay.min, ranges.reactivate_delay and ranges.reactivate_delay.max, false)
+	else
+		-- Guard del plan: si x_max > x → tirar uniforme en [x, x_max]
+		total     = roll_range(self.total_enemies,     self.total_enemies,     self.total_enemies_max,     true)
+		interval  = roll_range(self.spawn_interval,    self.spawn_interval,    self.spawn_interval_max,    false)
+		radius    = roll_range(self.spawn_radius,      self.spawn_radius,      self.spawn_radius_max,      true)
+		reactivate = roll_range(self.reactivate_delay, self.reactivate_delay, self.reactivate_delay_max, false)
+	end
+
+	-- Programa las creaciones con retardo creciente. El factory se resuelve
+	-- POR SPAWN (factory_for_spawn): con enemy_type "mix" cada aparición
+	-- alterna cucaracha/rata; con tipo fijo es siempre el mismo.
+	for i = 1, total do
+		local factory_name = factory_for_spawn(self, i)
+		local factory_url = msg.url(nil, nil, hash(factory_name))
+		local delay = (i - 1) * interval
+		local is_last = (i == total)
+		local offset = vmath.vector3(math.random(-radius, radius), math.random(-radius, radius), 0)
+		local enemy_position = position + offset
+
+		timer.delay(delay, false, function()
+			-- 🧍 Si el jugador está muerto (o murió mientras el timer esperaba), NO
+			--    crear el enemigo: una emisión que coincida con el clic de
+			--    Reintentar sobreviviría a clear_alive(). Se libera wave_active en
+			--    la última creación igualmente (is_last) para no bloquear futuras
+			--    oleadas.
+			if self.player_dead or enemy_state.is_waves_paused() then
+				if is_last then
+					self.wave_active = false
+				end
+				return
+			end
+			-- 🪺 Si el nido fue destruido mientras el timer esperaba, NO crear
+			if nest_spawn_state.is_destroyed(go.get_id()) then
+				if is_last then
+					self.wave_active = false
+				end
+				return
+			end
+			-- Verificar que el factory sigue existiendo (el trigger pudo desactivarse).
+			-- 🪺 from_nest (Ago 2026): solo los enemigos de NIDO llevan el flag
+			-- (use_nest_ranges true) → el enemigo se auto-despawneará por
+			-- distancia si el jugador se aleja sin interactuar (balance.nest.
+			-- enemy_despawn_distance). Los spawners standalone y los estáticos
+			-- del editor nunca lo tienen → persisten como siempre.
+			local ok, id = pcall(factory.create, factory_url, enemy_position, nil, { from_nest = self.use_nest_ranges }, 0.5)
+			if ok and id then
+				-- 🐱 El registro en enemy_state lo hace el PROPIO enemigo en su
+				-- init() (enemy_cockroach.script / enemy_rat.script): así también
+				-- quedan registrados los estáticos del editor (el spray móvil y el
+				-- gato los necesitan). Antes este spawner registraba aquí el id de
+				-- factory.create; se quitó para evitar duplicados.
+			else
+				print("[spawn_enemies] Error al crear enemigo (factory no disponible: " .. factory_name .. ")")
+			end
+			-- Última creación escalonada → la oleada terminó: liberar el guard
+			if is_last then
+				self.wave_active = false
+			end
+		end)
+	end
+
+	-- 🚫 Deshabilitar el colisionador mientras se procesa la oleada: así el
+	--    trigger no se re-dispara mientras el jugador sigue dentro del radio
+	--    (evita reentrada en el mismo frame de las creaciones escalonadas).
+	msg.post("#collisionobject", "disable")
+
+	-- 🔁 Reactivación periódica: si reactivate > 0 (valor base o tirada de Fase
+	--    3), tras ese tiempo el trigger vuelve a estar activo y lanzará otra
+	--    oleada si el jugador sigue dentro del radio. reactivate = 0 mantiene
+	--    el one-shot. ⚠️ Re-habilitar un trigger NO regenera trigger_response
+	--    (enter) para objetos ya superpuestos (verificado en la doc de Defold):
+	--    por eso, además de re-habilitar, comprobamos por distancia si el
+	--    jugador sigue dentro y spawnamos en ese caso (patrón de fallback por
+	--    proximidad de las zonas).
+	if reactivate > 0 then
+		timer.delay(reactivate, false, function()
+			-- 🧍 Si el jugador está muerto, no re-habilitar ni re-disparar:
+			--    update() se encargará de reactivar el trigger al resucitar.
+			if self.player_dead or enemy_state.is_waves_paused() then return end
+			-- 🪺 Si el nido fue destruido, no re-habilitar
+			if nest_spawn_state.is_destroyed(go.get_id()) then return end
+			-- Re-habilitar el trigger para detectar futuras entradas
+			msg.post("#collisionobject", "enable")
+			-- Si el jugador sigue dentro del radio → otra oleada inmediata
+			local player_url = msg.url("/player")
+			if go.exists(player_url) then
+				local player_pos = go.get_position(player_url)
+				local my_pos = go.get_position()
+				if vmath.length(player_pos - my_pos) <= self.activation_radius then
+					spawn_enemies(self, my_pos)
+				end
+			end
+		end)
+	end
+end
+
+function init(self)
+	-- 🧍 Estado de vida del jugador sincronizado desde enemy_state (ver
+	--    update()). Mientras sea true, este spawner no emite enemigos.
+	self.player_dead = enemy_state.is_waves_paused()
+	self.fight_poll = 0
+	-- 🪗 Estado de la histéresis espacial del fight (false → radio de entrada)
+	self.fight_in_combat = false
+
+	-- 🪺 FASE 3 (NEST_SYSTEM_PLAN §6): si este spawner es un nido (flag
+	--    use_nest_ranges en nest.go), los rangos viven en config.balance.
+	--    nest_ranges (los nidos son instancias de factory sin configuración
+	--    por instancia en el editor). El tipo de enemigo se elige UNA vez por
+	--    nido (los 5 nidos no son clones); el resto de rangos se tira POR
+	--    OLEADA en spawn_enemies(). Si la tabla se borra → nil → el nido usa
+	--    sus valores fijos de nest.go (fallback seguro).
+	self.nest_ranges = nil
+	if self.use_nest_ranges then
+		local ranges = (config.balance and config.balance.nest_ranges) or nil
+		if ranges then
+			self.nest_ranges = ranges
+			if ranges.enemy_types and #ranges.enemy_types > 0 then
+				self.enemy_type = hash(ranges.enemy_types[math.random(1, #ranges.enemy_types)])
+			end
+		end
+	end
+end
+
+function final(self)
+	-- 🎵 Red de seguridad: si el nivel se descarga con enemigos vivos, retirar
+	--    el evento de pelea de la pila de audio (idempotente; los cambios de
+	--    escena ya resetean la pila vía start/stop_playlist).
+	msg.post(AUDIO_MANAGER_URL, "stop_event", { id = "fight" })
+end
+
+function update(self, dt)
+	-- ⚔️ Sondeo de pelea: mientras quede algún enemigo vivo DENTRO del radio
+	--    de combate (id real registrado, GO existente y distancia al jugador
+	--    ≤ config.FIGHT_COMBAT_RADIUS) y el jugador no esté muerto, la música
+	--    de fight suena. Los mensajes son idempotentes en el audio_manager
+	--    (no reinician la pista si ya está activa). Histéresis espacial:
+	--    entra con radio base, sale con radio × FIGHT_EXIT_FACTOR.
+	self.fight_poll = self.fight_poll + dt
+	if self.fight_poll >= FIGHT_POLL_INTERVAL then
+		self.fight_poll = 0
+		local in_combat = false
+		local player_url = msg.url("/player")
+		if go.exists(player_url) then
+			local p = go.get_world_position(player_url)
+			local radius = config.FIGHT_COMBAT_RADIUS
+			if self.fight_in_combat then
+				radius = radius * FIGHT_EXIT_FACTOR
+			end
+			local radius_sqr = radius * radius
+			for _, id in ipairs(enemy_state.get_spawned()) do
+				if go.exists(id) then
+					-- Distancia al cuadrado (zero-alloc, estándar §2): misma
+					-- técnica que auto_aim.find_nearest (espacio MUNDO para
+					-- ambos; idéntico en top-level, robusto si se anida).
+					local pos = go.get_world_position(id)
+					local dx = pos.x - p.x
+					local dy = pos.y - p.y
+					if dx * dx + dy * dy <= radius_sqr then
+						in_combat = true
+						break
+					end
+				end
+			end
+		end
+		self.fight_in_combat = in_combat
+		if in_combat and not enemy_state.is_waves_paused() then
+			msg.post(AUDIO_MANAGER_URL, "play_event", { id = "fight" })
+		else
+			msg.post(AUDIO_MANAGER_URL, "stop_event", { id = "fight" })
+		end
+	end
+
+	-- 🧍 Sincronizar estado de vida del jugador (enemy_state.waves_paused,
+	--    establecido por player.script). Mientras el jugador está muerto el
+	--    trigger queda desactivado y no se emiten enemigos; al resucitar se
+	--    reactiva para futuras oleadas (las reactivaciones periódicas que se
+	--    saltaron durante la muerte no se reprograman, el trigger vuelve a
+	--    detectar entradas con normalidad).
+	local paused = enemy_state.is_waves_paused()
+	if paused == self.player_dead then return end
+	self.player_dead = paused
+	if paused then
+		msg.post("#collisionobject", "disable")
+	else
+		msg.post("#collisionobject", "enable")
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	-- Detecta si el jugador entró en el radio del Trigger
+	if message_id == hash("trigger_response") and message.enter then
+		local my_position = go.get_position()
+		spawn_enemies(self, my_position)
+	end
+end

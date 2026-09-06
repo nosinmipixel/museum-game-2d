@@ -1,0 +1,197 @@
+-- features/enemies/nest.script
+-- ═══════════════════════════════════════════════════════
+-- 🪺 CICLO DE VIDA DEL NIDO
+-- ═══════════════════════════════════════════════════════
+--
+--   Responsabilidades:
+--     1. Leer config de nest_spawn_state (pending_spawn)
+--     2. Hover → tint rojizo (patrón office_cabinet)
+--     3. Interact → si tiene insecticida, destruir nido
+--     4. Destrucción: marcar, purgar enemigos, anim+sonido,
+--        notificar contenedor, go.delete()
+--
+--   Hereda spawn_enemies.script para oleadas (trigger, escalonado,
+--   reactivate_delay, guards de muerte).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-17
+-- ═══════════════════════════════════════════════════════
+
+local nest_state = require "main.nest_spawn_state"
+local enemy_state = require "main.enemy_state"
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular
+local DEBUG_NEST = false
+local dprint = config.make_log(DEBUG_NEST)
+
+-- 📝 Textos localizados (cargados en init, actualizados con idioma)
+local ALERT_NO_INSECTICIDE_FALLBACK = "Necesitas un bote de insecticida para destruir el nido"
+
+-- 🎨 Colores de tint
+local TINT_NORMAL  = vmath.vector4(1.0, 1.0, 1.0, 1.0)
+local TINT_HOVER   = vmath.vector4(1.5, 0.8, 0.8, 1.0)  -- rojizo
+local TWEEN_TIME   = 0.15
+
+-- 🗑️ Radio de purga: enemigos dentro de esta distancia se borran
+--    al destruir el nido (el nido "arrasa su camada")
+local PURGE_RADIUS = 100.0
+
+
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: TINT ROJIZO
+-- ═══════════════════════════════════════════════════════
+
+local function on_mouse_hover(self, entering)
+	local target = entering and TINT_HOVER or TINT_NORMAL
+	go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, target, go.EASING_OUTQUAD, TWEEN_TIME)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🗑️ PURGA DE ENEMIGOS CERCANOS
+-- ═══════════════════════════════════════════════════════
+
+local function purge_nearby_enemies(self)
+	local nest_pos = go.get_position()
+	local purged = 0
+
+	for _, enemy_id in ipairs(enemy_state.get_spawned()) do
+		if go.exists(enemy_id) then
+			local enemy_pos = go.get_position(enemy_id)
+			local diff = enemy_pos - nest_pos
+			-- Distancia 2D (ignorar z)
+			local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
+			if dist <= PURGE_RADIUS then
+				pcall(go.delete, enemy_id)
+				purged = purged + 1
+			end
+		end
+	end
+
+	dprint("[Nest] Purgados " .. purged .. " enemigos cercanos (radio " .. PURGE_RADIUS .. ")")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 💀 DESTRUCCIÓN DEL NIDO
+-- ═══════════════════════════════════════════════════════
+
+local function destroy_nest(self)
+	-- 1. Consumir 1 carga de insecticida
+	game_state.add_to_global("nest_insecticide", -1)
+
+	-- 2. Bonus a la tarea de plagas (híbrido)
+	local bonus = (config.balance and config.balance.nest and config.balance.nest.nest_bonus) or 5
+	game_state.add_to_global("task_bugs_total", bonus)
+
+	-- 3. Marcar como destruido ANTES de borrar (el guard de
+	--    spawn_enemies corta timers pendientes)
+	nest_state.mark_destroyed(go.get_id())
+
+	-- 4. Purgar enemigos vivos cercanos
+	purge_nearby_enemies(self)
+
+	-- 5. Animación de destrucción + sonido
+	sprite.play_flipbook(self.sprite_url, hash("nest_destruction"), go.PLAYBACK_ONCE_FORWARD)
+	sound.play("#nest_plague_destruction")
+
+	dprint("[Nest] Destruido (spawn #" .. self.spawn_index .. "). Bonus: +" .. bonus)
+
+	-- 6. Notificar al contenedor para reposición
+	if nest_state.container_url then
+		msg.post(nest_state.container_url, "nest_destroyed", { spawn_index = self.spawn_index })
+	end
+
+	-- 7. Eliminar después de un breve retardo (para que suene el sonido)
+	timer.delay(0.3, false, function()
+		go.delete()
+	end)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📝 CARGAR TEXTO LOCALIZADO DE ALERTA
+-- ═══════════════════════════════════════════════════════
+local function get_alert_no_insecticide(self)
+	if not self.general_texts then
+		self.general_texts = text_loader.load("general") or {}
+	end
+	local tutorials = self.general_texts.tutorials or {}
+	return tutorials.alert_no_insecticide or ALERT_NO_INSECTICIDE_FALLBACK
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INTERACCIÓN (CLIC)
+-- ═══════════════════════════════════════════════════════
+
+local function on_interact(self)
+	local insecticide = tonumber(game_state.get_global("nest_insecticide") or 0)
+
+	if insecticide > 0 then
+		destroy_nest(self)
+	else
+		-- Alerta: necesitas insecticida (patrón del proyecto: url relativa del nivel)
+		local alert_text = get_alert_no_insecticide(self)
+		msg.post("/gui#hud", "show_alert", { text = alert_text })
+		dprint("[Nest] Sin insecticida — alerta mostrada")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DEL SCRIPT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	-- Leer datos del pending_spawn (escrito por nest_container ANTES de factory.create)
+	local pending = nest_state.pending_spawn
+	if pending then
+		self.spawn_index = pending.index
+		-- La posición ya está fijada por factory.create; no mover
+		nest_state.pending_spawn = nil  -- limpiar
+	else
+		-- Nido estático del editor (sin contenedor)
+		self.spawn_index = 0
+	end
+
+	self.is_hovered = false
+
+	-- URL del sprite cacheada
+	self.sprite_url = msg.url(nil, go.get_id(), hash("sprite"))
+
+	-- Asegurar tint normal al inicio
+	go.set(self.sprite_url, "tint", TINT_NORMAL)
+
+	-- 🌐 Recargar textos localizados si el idioma cambia en caliente
+	--    (patrón del proyecto: get_alert_no_insecticide cachea en self.general_texts)
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.general_texts = text_loader.reload("general", new_lang) or {}
+		dprint("[Nest] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	dprint("[Nest] Init spawn_index=" .. self.spawn_index)
+end
+
+function final(self)
+	-- Red de seguridad: si el GO se destruye con hover activo,
+	-- no queda tint residual (aunque go.delete ya lo limpia)
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		if message.enter and not self.is_hovered then
+			self.is_hovered = true
+			on_mouse_hover(self, true)
+		elseif not message.enter and self.is_hovered then
+			self.is_hovered = false
+			on_mouse_hover(self, false)
+		end
+
+	elseif message_id == hash("interact") then
+		-- Solo interactuar si el cursor está realmente sobre el nido
+		if self.is_hovered then
+			on_interact(self)
+		end
+	end
+end

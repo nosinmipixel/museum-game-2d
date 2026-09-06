@@ -1,0 +1,74 @@
+-- features/props/bullet.script
+-- ═══════════════════════════════════════════════════════
+-- 💥 BALA DEL SPRAY — PROYECTIL
+-- ═══════════════════════════════════════════════════════
+--
+--   Proyectil disparado por el spray: avanza con su rotación,
+--   crece (start_scale → end_scale vía go.animate) e inflige
+--   daño al impactar. Zero-garbage: vector pre-asignado.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "take_damage" (hacia el enemigo impactado)
+--   Mensajes que RECIBE (on_message):
+--     ← "trigger_response" (impacto con trigger)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("speed", 300)
+go.property("damage", 1.0) -- Tu valor de daño por impacto
+go.property("start_scale", 0.2)  -- Escala inicial de la partícula (al disparar)
+go.property("end_scale", 1.0)    -- Escala final (la partícula crece durante su vida)
+go.property("scale_duration", 0.4) -- Duración del escalado en segundos (< 0.5s de vida)
+
+function init(self)
+	-- Convertir la rotación en un vector de movimiento hacia adelante
+	local look_vector = vmath.rotate(go.get_rotation(), vmath.vector3(0, 1, 0)) 
+	self.velocity = look_vector * self.speed
+
+	-- Zero-garbage (§1): vector pre-asignado para el hot path de update()
+	self.tmp_pos = vmath.vector3()
+
+	-- 🌊 Escalado de la partícula: de start_scale a end_scale durante su vida.
+	--    Regla §8 (docs/DEFOLD_LUA_STANDARDS.md): go.animate en vez de lerp manual en
+	--    update() (engine-side, sin garbage por frame). La escala Z se mantiene en
+	--    1 para no alterar la posición Z del sprite (z:1.0 en bullet.go) ni el
+	--    orden de render. El collisionobject TRIGGER escala junto al GO, así la
+	--    hitbox crece en sincronía con el visual.
+	go.set_scale(vmath.vector3(self.start_scale, self.start_scale, 1))
+	go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD,
+		vmath.vector3(self.end_scale, self.end_scale, 1),
+		go.EASING_OUTQUAD, self.scale_duration)
+
+	-- Autodestrucción tras 0.5 segundos si no impacta nada
+	timer.delay(0.5, false, function()
+		go.delete()
+	end)
+end
+
+function update(self, dt)
+	-- Mover la partícula (mutar vector pre-asignado en vez de alocar
+	-- `pos + velocity*dt` por frame — §1)
+	local pos = go.get_position()
+	local new_pos = self.tmp_pos
+	new_pos.x = pos.x + self.velocity.x * dt
+	new_pos.y = pos.y + self.velocity.y * dt
+	new_pos.z = pos.z + self.velocity.z * dt
+	go.set_position(new_pos)
+
+	-- Simular resistencia del aire (el spray se frena) — en el sitio
+	self.velocity.x = self.velocity.x * 0.95
+	self.velocity.y = self.velocity.y * 0.95
+	self.velocity.z = self.velocity.z * 0.95
+end
+
+function on_message(self, message_id, message, sender)
+	-- Detectar colisión con el enemigo
+	if message_id == hash("trigger_response") and message.enter then
+		-- Enviar mensaje de daño al script específico del enemigo que tocó
+		msg.post(message.other_id, "take_damage", { amount = self.damage })
+		go.delete() -- Destruir la partícula de spray tras el impacto
+	end
+end

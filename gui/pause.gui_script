@@ -1,0 +1,986 @@
+-- gui/pause.gui_script
+-- ═══════════════════════════════════════════════════════
+-- ⏸  MENÚ DE PAUSA (con control de volumen)
+-- ═══════════════════════════════════════════════════════
+--
+--   Se activa con la tecla P. Se desactiva con:
+--     - Tecla Esc
+--     - Botón de reanudar (btn_resume)
+--
+--   Alojado en bootstrap (fuera del proxy de level_01) para
+--   que la GUI funcione con el time-step del motor principal,
+--   independientemente de la pausa del nivel. Al abrir el menú
+--   se envía pause_game a scene_manager, que congela level_01
+--   vía set_time_step (factor=0, mode=1).
+--
+--   El mode=1 de set_time_step también ignora las acciones de
+--   input del proxy, evitando que teclas como ESC lleguen al
+--   player durante la pausa (resolviendo el conflicto con el
+--   sistema de cancelación de diálogos).
+--
+--   🌳 ESTRUCTURA DEL MENÚ: todos los nodos cuelgan de un nodo raíz
+--   invisible (pause_root, box de 1280×768 con alpha 0). init/show_pause/
+--   hide_pause alternan TODO el árbol con gui.set_enabled via gui.get_tree()
+--   (GOTCHA #32: el flag enabled es por nodo y gui.pick_node es geométrico →
+--   se recorre el árbol para dejar el estado completo; el render del subárbol
+--   sí se oculta con el padre). Añadir un nodo nuevo bajo pause_root en el
+--   editor lo cubre automáticamente, sin tocar este script.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-16
+-- ═══════════════════════════════════════════════════════
+
+local SCENE_MANAGER_URL = "bootstrap:/main_loader#scene_manager"
+local AUDIO_MANAGER_URL = "bootstrap:/audio_manager#manager"
+-- 📱 Controles táctiles (Fase 6): al abrir/cerrar el menú se les avisa para
+--    ocultarse (render order 5 > 4: quedarían flotando encima del menú).
+local WEB_CONTROLS_URL = "bootstrap:/gui_web_controls#web_controls"
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local save_manager = require "main.save_manager"
+local gui_touch = require "main.gui_touch"  -- 📱 GOTCHA #13: diana táctil ampliada
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_PAUSE = false
+local dprint = config.make_log(DEBUG_PAUSE)
+
+-- Etiquetas de idioma para el botón desplegable
+local LANG_LABELS = {
+	es = "Español",
+	en = "English",
+}
+
+-- ═══════════════════════════════════════════════════════
+-- 🔧 DECLARACIONES ADELANTADAS
+-- ═══════════════════════════════════════════════════════
+local show_pause
+local hide_pause
+
+-- ═══════════════════════════════════════════════════════
+-- 🌳 ÁRBOL DE NODOS (GOTCHA #32)
+-- ═══════════════════════════════════════════════════════
+--   GOTCHA #32: el flag `enabled` es POR NODO (gui.is_enabled no mira al
+--   padre) y gui.pick_node es GEOMÉTRICO (no respeta enabled). El render del
+--   subárbol sí se oculta al deshabilitar el padre, pero recorrer el árbol
+--   con gui.get_tree() (disponible desde Defold 1.4.8) garantiza el estado
+--   completo (no render, no animación, no picking) y un reset limpio al
+--   reabrir. Cualquier nodo nuevo añadido bajo pause_root en el editor queda
+--   cubierto automáticamente por init/show_pause/hide_pause.
+local function set_tree_enabled(root, enabled)
+	if not root then return end
+	for _, node in pairs(gui.get_tree(root)) do
+		gui.set_enabled(node, enabled)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎨 ANIMACIONES DEL BOTÓN DE REANUDAR
+-- ═══════════════════════════════════════════════════════
+-- 📱 GOTCHA #13: el hover de btn_resume es RELATIVO a la escala base del nodo
+--    (editor 2.0 en PC; ampliada ~2.75× en táctil para ≥44px CSS).
+local RESUME_HOVER_FACTOR = 1.1
+local BTN_HOVER_DURATION = 0.12
+local BTN_COLOR_NORMAL  = vmath.vector4(1.0, 1.0, 1.0, 1.0)
+local BTN_COLOR_HOVER   = vmath.vector4(0.9, 1.0, 0.9, 1.0)
+
+-- ═══════════════════════════════════════════════════════
+-- 🎨 COLORES DEL BOTÓN DE IDIOMA
+-- ═══════════════════════════════════════════════════════
+local LAN_COLOR_NORMAL  = vmath.vector4(1.0, 1.0, 1.0, 1.0)
+local LAN_COLOR_HOVER   = vmath.vector4(0.85, 1.0, 0.85, 1.0)
+local OPT_COLOR_NORMAL  = vmath.vector4(0.4, 0.6, 0.6, 1.0)
+local OPT_COLOR_HOVER   = vmath.vector4(0.55, 0.75, 0.75, 1.0)
+
+-- ═══════════════════════════════════════════════════════
+-- 🎚️ COLORES DEL CONTROL DE VOLUMEN
+-- ═══════════════════════════════════════════════════════
+local VOL_COLOR_NORMAL  = vmath.vector4(1.0, 1.0, 1.0, 1.0)
+local VOL_COLOR_HOVER   = vmath.vector4(0.0, 0.8, 1.0, 1.0)
+local VOL_BAR_FULL      = vmath.vector4(0.1, 0.2, 0.6, 1.0)
+local VOL_BAR_MID       = vmath.vector4(0.6, 0.6, 0.2, 1.0)
+local VOL_BAR_EMPTY     = vmath.vector4(0.6, 0.1, 0.1, 1.0)
+local VOL_BG_ALPHA      = 0.4
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 NODOS DEL GUI
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- scene_manager notifica cuando se puede/ no se puede pausar
+	if message_id == hash("set_pause_enabled") then
+		self.pause_enabled = message.enabled
+		-- Si la pausa se deshabilita mientras estábamos en pausa, ocultarla
+		if not message.enabled and self.is_paused then
+			hide_pause(self)
+		end
+		return
+	end
+
+	-- 📱 Fase 6 — Botón de pausa táctil (web_controls.btn_pause): activa la
+	--    pausa con el MISMO gating que la tecla P (on_input key_p): solo si
+	--    está habilitada (level_01) y no está ya activa. No reanuda: eso se
+	--    hace desde el menú (btn_resume acepta toques vía single-touch).
+	if message_id == hash("request_pause") then
+		if self.pause_enabled and not self.is_paused then
+			show_pause(self)
+		end
+		return
+	end
+end
+
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima):
+	-- pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+	gui.set_render_order(4)
+
+	-- 🌳 Nodo raíz invisible: contiene TODO el árbol del menú (GOTCHA #32)
+	self.root = gui.get_node("pause_root")
+
+	-- Referencias a nodos raíz
+	self.bg           = gui.get_node("pause_background")
+	self.btn_resume   = gui.get_node("btn_resume")
+	self.btn_sound    = gui.get_node("btn_sound_background")
+	self.btn_lan      = gui.get_node("btn_lan")
+
+	-- Referencias a hijos de btn_lan (desplegable de idioma)
+	self.lan_header_bg      = gui.get_node("header_background")
+	self.lan_title          = gui.get_node("btn_lan_title")
+	self.lan_option_01      = gui.get_node("option_01")
+	self.lan_option_text    = gui.get_node("option_01_text")
+
+	-- Texto informativo "Juego en pausa"
+	self.text_info          = gui.get_node("text_info")
+
+	-- Referencias a nodos de volumen
+	self.volume_bar_bg      = gui.get_node("volume_bar_bg")
+	self.volume_bar_fill    = gui.get_node("volume_bar_fill")
+	self.btn_vol_down       = gui.get_node("btn_volume_down")
+	self.btn_vol_up         = gui.get_node("btn_volume_up")
+	self.text_vol_label     = gui.get_node("text_volume_label")
+	self.text_vol_pct       = gui.get_node("text_volume_pct")
+
+	-- 🎛️ Referencias al control de EFECTOS (grupo de sonido "sfx")
+	self.sfx_bar_bg         = gui.get_node("sfx_bar_bg")
+	self.sfx_bar_fill       = gui.get_node("sfx_bar_fill")
+	self.btn_sfx_down       = gui.get_node("btn_sfx_down")
+	self.btn_sfx_up         = gui.get_node("btn_sfx_up")
+	self.text_sfx_label     = gui.get_node("text_sfx_label")
+	self.text_sfx_pct       = gui.get_node("text_sfx_pct")
+	self.btn_sfx_sound      = gui.get_node("btn_sfx_sound_background")
+
+	-- 🌡️ Referencias al control de UNIDADES de temperatura (°C/°F)
+	self.btn_units         = gui.get_node("btn_units")
+	self.btn_units_text    = gui.get_node("btn_units_text")
+	self.text_units_label  = gui.get_node("text_units_label")
+
+	-- 🖥️ Referencias al toggle del overlay FPS (mostrar/ocultar)
+	self.btn_fps          = gui.get_node("btn_fps")
+	self.btn_fps_text     = gui.get_node("btn_fps_text")
+	self.text_fps_label   = gui.get_node("text_fps_label")
+
+	-- Estado interno
+	self.is_paused          = false
+	self.pause_enabled      = false  -- solo se activa en level_01 (lo setea scene_manager)
+	self.resume_hover       = false
+	self.lan_hover          = false
+	self.option_hover       = false
+	self.lang_dropdown_open = false
+	self.current_lang       = "es"
+
+	-- 🌡️ Unidad de temperatura elegida por el jugador ("c" = °C, "f" = °F)
+	self.units_hover = false
+	self.temp_units  = game_state.get_global("temp_units") or "c"
+
+	-- 🖥️ Overlay FPS: hover del toggle (el estado vive en game_state.fps_overlay)
+	self.fps_hover = false
+
+	-- Etiquetas de texto localizables
+	self.text_language  = gui.get_node("text_language")
+	self.text_file_game = gui.get_node("text_file_game")
+
+	-- Referencias a botones de importar/exportar
+	self.btn_import  = gui.get_node("btn_import")
+	self.btn_export  = gui.get_node("btn_export")
+
+	-- 📱 GOTCHA #13: escala del editor CACHEADA en init (antes de cualquier
+	-- animación de hover). Leer gui.get_scale en runtime capturaría un valor
+	-- congelado por cancel_animations (btn_resume anima escala: editor 2.0 ↔
+	-- hover 2.2; el resto solo anima color, así que su escala es estable).
+	self.editor_scale = {
+		resume = self.btn_resume and gui.get_scale(self.btn_resume).x or 1.0,
+		sound  = self.btn_sound  and gui.get_scale(self.btn_sound).x  or 1.0,
+		sfx_sound = self.btn_sfx_sound and gui.get_scale(self.btn_sfx_sound).x or 1.0,
+		lan    = self.btn_lan    and gui.get_scale(self.btn_lan).x    or 1.0,
+		io     = self.btn_import and gui.get_scale(self.btn_import).x or 1.0,
+		vol    = self.btn_vol_down and gui.get_scale(self.btn_vol_down).x or 1.0,
+		sfx    = self.btn_sfx_down and gui.get_scale(self.btn_sfx_down).x or 1.0,
+		units  = self.btn_units and gui.get_scale(self.btn_units).x or 1.0,
+		fps    = self.btn_fps and gui.get_scale(self.btn_fps).x or 1.0,
+	}
+
+	-- Estado de import/export
+	self.import_hover = false
+	self.export_hover = false
+
+	-- Estado del volumen
+	self.volume             = 1.0
+	-- 📏 Ancho máximo de la barra de volumen: se lee del tamaño del fill en el
+	-- editor (antes hardcodeado a 96.0 — redimensionar el nodo en el editor no
+	-- tenía efecto en runtime). gui.get_size funciona aunque el nodo esté
+	-- deshabilitado (propiedad, no requiere enabled).
+	self.volume_bar_width   = gui.get_size(self.volume_bar_fill).x
+	self.vol_down_hover     = false
+	self.vol_up_hover       = false
+
+	-- 🎛️ Estado del control de efectos (grupo sfx)
+	self.sfx_volume         = 1.0
+	self.sfx_bar_width      = gui.get_size(self.sfx_bar_fill).x
+	self.sfx_down_hover     = false
+	self.sfx_up_hover       = false
+
+	-- 🌳 Ocultar todo el árbol del menú (pause_root + descendientes).
+	--    GOTCHA #32: flag enabled por nodo + pick geométrico → se recorre el
+	--    árbol con gui.get_tree(). Cubre también box_logo/text_name y
+	--    cualquier nodo futuro añadido bajo pause_root.
+	set_tree_enabled(self.root, false)
+
+	-- 🖼️ pause_background es nodo RAÍZ (GOTCHA #9: el ZOOM solo cubre la
+	--    pantalla si se ajusta contra la ESCENA, no contra un padre FIT) → no
+	--    lo recorre el árbol del menú y se gestiona explícitamente aquí.
+	gui.set_enabled(self.bg, false)
+
+	-- Adquirir foco de entrada para detectar la tecla P en cualquier momento
+	msg.post(".", "acquire_input_focus")
+
+	dprint("[Pause] Menú de pausa inicializado (oculto). Pulsa P para pausar.")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎚️ ACTUALIZAR BARRA DE VOLUMEN
+-- ═══════════════════════════════════════════════════════
+
+local function update_volume_display(self)
+	local vol = self.volume or 1.0
+
+	-- Actualizar barra
+	local bar_width = self.volume_bar_width * vol
+	gui.set_size(self.volume_bar_fill, vmath.vector3(bar_width, 10.0, 0))
+
+	-- Color de la barra según nivel
+	local bar_color
+	if vol >= 0.6 then
+		bar_color = VOL_BAR_FULL
+	elseif vol >= 0.3 then
+		bar_color = VOL_BAR_MID
+	else
+		bar_color = VOL_BAR_EMPTY
+	end
+	if vol == 0 then
+		bar_color.w = 0.3  -- Semitransparente si está al mínimo
+	end
+	gui.set_color(self.volume_bar_fill, bar_color)
+
+	-- Color del botón de sonido según volumen
+	if vol == 0 then
+		-- Silenciado: botón con alpha bajo
+		gui.set_color(self.btn_sound, vmath.vector4(0.5, 0.5, 0.5, 0.5))
+	else
+		gui.set_color(self.btn_sound, vmath.vector4(1.0, 1.0, 1.0, 1.0))
+	end
+
+	-- Texto porcentual
+	gui.set_text(self.text_vol_pct, math.floor(vol * 100) .. "%")
+end
+
+-- 🎛️ ACTUALIZAR BARRA DE EFECTOS (grupo sfx): mismo patrón que el volumen
+-- (mismo color por nivel) + botón de mute propio (mismo comportamiento que
+-- el de música: se atenúa al silenciar).
+local function update_sfx_display(self)
+	local vol = self.sfx_volume or 1.0
+
+	local bar_width = self.sfx_bar_width * vol
+	gui.set_size(self.sfx_bar_fill, vmath.vector3(bar_width, 10.0, 0))
+
+	local bar_color
+	if vol >= 0.6 then
+		bar_color = VOL_BAR_FULL
+	elseif vol >= 0.3 then
+		bar_color = VOL_BAR_MID
+	else
+		bar_color = VOL_BAR_EMPTY
+	end
+	if vol == 0 then
+		bar_color.w = 0.3  -- Semitransparente si está al mínimo
+	end
+	gui.set_color(self.sfx_bar_fill, bar_color)
+
+	-- Color del botón de mute de efectos según volumen (como el de música)
+	if self.btn_sfx_sound then
+		if vol == 0 then
+			gui.set_color(self.btn_sfx_sound, vmath.vector4(0.5, 0.5, 0.5, 0.5))
+		else
+			gui.set_color(self.btn_sfx_sound, vmath.vector4(1.0, 1.0, 1.0, 1.0))
+		end
+	end
+
+	gui.set_text(self.text_sfx_pct, math.floor(vol * 100) .. "%")
+end
+
+-- 🌡️ Refresca el texto del botón de unidades con la unidad seleccionada.
+--    Las etiquetas viven en general_text → M.ui.temp_unit_c/f (mismo valor
+--    en ambos idiomas: la elección es del jugador, no del idioma).
+local function refresh_units(self)
+	if not self.btn_units_text then return end
+	local ui = (text_loader.load("general", self.current_lang) or {}).ui or {}
+	local unit = (self.temp_units == "f") and (ui.temp_unit_f or "°F") or (ui.temp_unit_c or "°C")
+	gui.set_text(self.btn_units_text, unit)
+end
+
+-- 🖥️ Refresca el botón del overlay FPS con el estado actual (Sí/No). El estado
+--    vive en game_state.fps_overlay (el HUD lo persiste en su init con
+--    fallback a FPS_START_VISIBLE); Sí/No se localizan con ui.btn_yes/btn_no.
+local function refresh_fps(self)
+	if not self.btn_fps_text then return end
+	local ui = (text_loader.load("general", self.current_lang) or {}).ui or {}
+	local enabled = game_state.get_global("fps_overlay")
+	if enabled == nil then enabled = true end  -- fallback: mismo default que el HUD
+	gui.set_text(self.btn_fps_text, enabled and (ui.btn_yes or "Sí") or (ui.btn_no or "No"))
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 👆 MOSTRAR / OCULTAR
+-- ═══════════════════════════════════════════════════════
+
+-- 📱 GOTCHA #13: escala base del nodo (editor en PC; ampliada en táctil).
+-- Se calcula al MOSTRAR el menú (no en init) para que la detección de
+-- plataforma (platform.detect, bootstrap) ya esté resuelta.
+-- editor_scale = valor cacheado en init (leer gui.get_scale en runtime
+-- capturaría un hover congelado por cancel_animations, p. ej. btn_resume).
+local function node_base_scale(node, editor_scale, max_scale)
+	if not node then return 1.0 end
+	local s = gui_touch.total_scale(gui.get_size(node).y, max_scale)
+	if s == 1 then
+		-- PC: mantener la escala definida en el editor (cacheada en init)
+		return editor_scale or 1.0
+	end
+	return s
+end
+
+show_pause = function(self)
+	if self.is_paused then return end
+	self.is_paused = true
+
+	-- 🌳 Mostrar todo el árbol del menú (pause_root + descendientes).
+	--    GOTCHA #32: flag enabled por nodo + pick geométrico → se recorre el
+	--    árbol con gui.get_tree(). Cubre también box_logo/text_name y
+	--    cualquier nodo futuro añadido bajo pause_root.
+	set_tree_enabled(self.root, true)
+
+	-- 🖼️ pause_background es nodo RAÍZ (GOTCHA #9: ZOOM contra la escena) y
+	--    no cuelga de pause_root → se activa explícitamente. Así cubre TODA
+	--    la pantalla, incluida la franja letterbox del FIT en móvil/ultrawide
+	--    (como nodo hijo de pause_root su ZOOM se calculaba contra el padre
+	--    ajustado por FIT → quedaban bandas laterales sin oscurecer).
+	gui.set_enabled(self.bg, true)
+
+	-- Desplegable de idioma: arranca CERRADO. El árbol lo habilita todo,
+	-- así que hay que volver a ocultar sus hijos (header + opción).
+	gui.set_enabled(self.lan_header_bg, false)
+	gui.set_enabled(self.lan_option_01, false)
+	gui.set_enabled(self.lan_option_text, false)
+	gui.set_color(self.btn_import, BTN_COLOR_NORMAL)
+	gui.set_color(self.btn_export, BTN_COLOR_NORMAL)
+	self.import_hover = false
+	self.export_hover = false
+
+	-- Configurar textos del botón de idioma
+	self.lang_dropdown_open = false
+	self.current_lang = game_state.get_global("language") or "es"
+	local general_texts = text_loader.load("general", self.current_lang)
+	gui.set_text(self.text_info, general_texts.ui.label_pause or "Juego en pausa")
+	gui.set_text(self.text_language, general_texts.ui.label_language or "Idioma")
+	gui.set_text(self.text_file_game, general_texts.ui.label_file_game or "Partida")
+	gui.set_text(self.text_vol_label, general_texts.ui.label_volume or "Música")
+	gui.set_text(self.text_sfx_label, general_texts.ui.label_sfx or "Efectos de sonido")
+	gui.set_text(self.lan_title, LANG_LABELS[self.current_lang])
+	local other_lang = (self.current_lang == "es") and "en" or "es"
+	gui.set_text(self.lan_option_text, LANG_LABELS[other_lang])
+
+	-- 🌡️ Fila de unidades de temperatura (etiqueta localizada + unidad actual)
+	gui.set_text(self.text_units_label, general_texts.ui.label_temp_units or "Unidades")
+	refresh_units(self)
+	gui.set_color(self.btn_units, LAN_COLOR_NORMAL)
+	self.units_hover = false
+
+	-- 🖥️ Fila del overlay FPS (etiqueta localizada + estado Sí/No)
+	gui.set_text(self.text_fps_label, general_texts.ui.label_fps or "Mostrar FPS")
+	refresh_fps(self)
+	gui.set_color(self.btn_fps, LAN_COLOR_NORMAL)
+	self.fps_hover = false
+
+	-- 📱 GOTCHA #13: escalas base ampliadas en táctil (PC = escala del editor).
+	-- btn_resume es el único con hover por ESCALA → su base se guarda para
+	-- que animate_resume_hover sea relativo a ella. El resto (idioma, sonido,
+	-- importar/exportar, volumen) solo usa color en hover → basta set_scale.
+	self.resume_base_scale = node_base_scale(self.btn_resume, self.editor_scale.resume)
+	gui.set_scale(self.btn_resume, vmath.vector3(self.resume_base_scale, self.resume_base_scale, 1.0))
+	gui.set_color(self.btn_resume, BTN_COLOR_NORMAL)
+	self.resume_hover = false
+
+	local lan_scale   = node_base_scale(self.btn_lan, self.editor_scale.lan)
+	-- 📱 Fila de volumen ESTRECHA (barra de solo 100 uu): los botones de sonido
+	-- y ± usan escalas MODERADAS (3.0×/1.6×) en lugar de la diana completa de
+	-- 88 uu — con la diana completa se solapan con la barra y entre sí (Ago 2026).
+	local sound_scale = node_base_scale(self.btn_sound, self.editor_scale.sound, 3.0)
+	local sfx_sound_scale = node_base_scale(self.btn_sfx_sound, self.editor_scale.sfx_sound, 3.0)
+	local io_scale    = node_base_scale(self.btn_import, self.editor_scale.io)
+	local vol_scale   = node_base_scale(self.btn_vol_down, self.editor_scale.vol, 1.6)
+	local sfx_scale   = node_base_scale(self.btn_sfx_down, self.editor_scale.sfx, 1.6)
+	local fps_scale   = node_base_scale(self.btn_fps, self.editor_scale.fps, 3.0)
+	-- 🌡️ Fila de UNIDADES: mismo tratamiento que el toggle FPS (mismo tamaño de
+	--    nodo 70×44 → misma escala táctil). Antes no se escalaba: en móvil el
+	--    botón de unidades quedaba a escala del editor (~24 CSS px) mientras
+	--    btn_fps se ampliaba a diana táctil → inconsistente visual y de pick.
+	local units_scale = node_base_scale(self.btn_units, self.editor_scale.units, 3.0)
+	if lan_scale ~= 1 then
+		gui.set_scale(self.btn_lan, vmath.vector3(lan_scale, lan_scale, 1.0))
+	end
+	if sound_scale ~= 1 then
+		gui.set_scale(self.btn_sound, vmath.vector3(sound_scale, sound_scale, 1.0))
+	end
+	if sfx_sound_scale ~= 1 then
+		gui.set_scale(self.btn_sfx_sound, vmath.vector3(sfx_sound_scale, sfx_sound_scale, 1.0))
+	end
+	if fps_scale ~= 1 then
+		gui.set_scale(self.btn_fps, vmath.vector3(fps_scale, fps_scale, 1.0))
+	end
+	if units_scale ~= 1 then
+		gui.set_scale(self.btn_units, vmath.vector3(units_scale, units_scale, 1.0))
+	end
+	if io_scale ~= 1 then
+		gui.set_scale(self.btn_import, vmath.vector3(io_scale, io_scale, 1.0))
+		gui.set_scale(self.btn_export, vmath.vector3(io_scale, io_scale, 1.0))
+	end
+	if vol_scale ~= 1 then
+		gui.set_scale(self.btn_vol_down, vmath.vector3(vol_scale, vol_scale, 1.0))
+		gui.set_scale(self.btn_vol_up,   vmath.vector3(vol_scale, vol_scale, 1.0))
+	end
+	if sfx_scale ~= 1 then
+		gui.set_scale(self.btn_sfx_down, vmath.vector3(sfx_scale, sfx_scale, 1.0))
+		gui.set_scale(self.btn_sfx_up,   vmath.vector3(sfx_scale, sfx_scale, 1.0))
+	end
+
+	-- 📱 Fila de volumen en TÁCTIL: el layout del editor manda. Las dianas
+	-- ampliadas (sonido 3.0×, ± 1.6×) crecen desde el centro del nodo sin
+	-- reposicionar nada — la redistribución del editor se respeta en ambas
+	-- plataformas (Ago 2026: se eliminó el reposicionado hardcodeado que
+	-- anulaba el layout del editor y provocaba solapes pct ↔ botón +).
+
+	-- Restaurar colores del botón de idioma
+	gui.set_color(self.btn_lan, LAN_COLOR_NORMAL)
+	gui.set_color(self.lan_option_01, OPT_COLOR_NORMAL)
+	self.lan_hover = false
+	self.option_hover = false
+
+	-- Cargar volumen guardado
+	self.volume = game_state.get_global("audio_volume") or 1.0
+	update_volume_display(self)
+
+	-- Resetear hover de volumen
+	self.vol_down_hover = false
+	self.vol_up_hover = false
+	gui.set_color(self.btn_vol_down, VOL_COLOR_NORMAL)
+	gui.set_color(self.btn_vol_up, VOL_COLOR_NORMAL)
+
+	-- 🎛️ Cargar volumen de efectos guardado y resetear su hover
+	self.sfx_volume = game_state.get_global("sfx_volume") or 1.0
+	update_sfx_display(self)
+	-- Re-aplicar el gain del grupo sfx: el init del audio_manager pudo correr
+	-- antes de game_state.load() (usaría el default 1.0). idempotente y barato.
+	msg.post(AUDIO_MANAGER_URL, "set_sfx_volume", { volume = self.sfx_volume })
+	self.sfx_down_hover = false
+	self.sfx_up_hover = false
+	gui.set_color(self.btn_sfx_down, VOL_COLOR_NORMAL)
+	gui.set_color(self.btn_sfx_up, VOL_COLOR_NORMAL)
+
+	-- 📱 Ocultar los controles táctiles mientras el menú está abierto
+	-- (web_controls tiene render order 5 > 4: quedarían encima del menú).
+	msg.post(WEB_CONTROLS_URL, "pause_state", { active = true })
+
+	-- 🎵 Evento de audio: sistema de pausa activo (background_exploration_4
+	--    en bucle mientras el menú esté abierto; se detiene en hide_pause).
+	--    El audio_manager vive en bootstrap, así que sigue sonando con el
+	--    nivel congelado por set_time_step.
+	msg.post(AUDIO_MANAGER_URL, "play_event", { id = "pause" })
+
+	-- Congelar el nivel principal
+	msg.post(SCENE_MANAGER_URL, "pause_game")
+
+	dprint("[Pause] ⏸  Juego pausado (volumen: " .. math.floor(self.volume * 100) .. "%)")
+end
+
+hide_pause = function(self)
+	if not self.is_paused then return end
+	self.is_paused = false
+
+	-- 🌳 Ocultar todo el árbol del menú (pause_root + descendientes).
+	--    GOTCHA #32: flag enabled por nodo + pick geométrico → se recorre el
+	--    árbol con gui.get_tree().
+	set_tree_enabled(self.root, false)
+	-- 🖼️ pause_background (nodo raíz, fuera del árbol): ocultarlo también.
+	gui.set_enabled(self.bg, false)
+
+	-- Resetear estado del dropdown de idioma
+	self.lang_dropdown_open = false
+
+	-- Cancelar animaciones pendientes del botón
+	gui.cancel_animations(self.btn_resume, gui.PROP_SCALE)
+	gui.cancel_animations(self.btn_resume, gui.PROP_COLOR)
+	self.resume_hover = false
+
+	-- Restaurar colores
+	gui.set_color(self.btn_lan, LAN_COLOR_NORMAL)
+	gui.set_color(self.lan_option_01, OPT_COLOR_NORMAL)
+	gui.set_color(self.btn_units, LAN_COLOR_NORMAL)
+	gui.set_color(self.btn_fps, LAN_COLOR_NORMAL)
+	gui.set_color(self.btn_vol_down, VOL_COLOR_NORMAL)
+	gui.set_color(self.btn_vol_up, VOL_COLOR_NORMAL)
+	gui.set_color(self.btn_sfx_down, VOL_COLOR_NORMAL)
+	gui.set_color(self.btn_sfx_up, VOL_COLOR_NORMAL)
+	self.lan_hover = false
+	self.option_hover = false
+	self.units_hover = false
+	self.fps_hover = false
+	self.vol_down_hover = false
+	self.vol_up_hover = false
+	self.sfx_down_hover = false
+	self.sfx_up_hover = false
+
+	-- 📱 Volver a mostrar los controles táctiles al cerrar el menú
+	msg.post(WEB_CONTROLS_URL, "pause_state", { active = false })
+
+	-- 🎵 Fin del evento de pausa: la playlist de fondo se reanuda.
+	msg.post(AUDIO_MANAGER_URL, "stop_event", { id = "pause" })
+
+	-- Reanudar el nivel principal
+	msg.post(SCENE_MANAGER_URL, "resume_game")
+
+	dprint("[Pause] ▶  Juego reanudado")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎚️ CAMBIAR VOLUMEN
+-- ═══════════════════════════════════════════════════════
+
+local function set_volume(self, new_volume)
+	self.volume = math.max(0, math.min(1, new_volume))
+	update_volume_display(self)
+
+	-- Guardar en game_state (persistente)
+	game_state.set_global("audio_volume", self.volume)
+	game_state.set_global("audio_enabled", self.volume > 0)
+
+	-- Aplicar al audio_manager (el mensaje se pierde si el GO no existe, sin error)
+	msg.post(AUDIO_MANAGER_URL, "set_volume", { volume = self.volume })
+end
+
+-- 🎛️ CAMBIAR VOLUMEN DE EFECTOS (grupo sfx): el audio_manager aplica
+-- sound.set_group_gain("sfx", v) — un solo ajuste controla todos los efectos.
+local function set_sfx_volume(self, new_volume)
+	self.sfx_volume = math.max(0, math.min(1, new_volume))
+	update_sfx_display(self)
+
+	-- Guardar en game_state (persistente)
+	game_state.set_global("sfx_volume", self.sfx_volume)
+
+	-- Aplicar al audio_manager (el mensaje se pierde si el GO no existe, sin error)
+	msg.post(AUDIO_MANAGER_URL, "set_sfx_volume", { volume = self.sfx_volume })
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INPUT (manejado directamente vía on_input del GUI)
+-- ═══════════════════════════════════════════════════════
+
+local function animate_resume_hover(self, hovering)
+	local base = vmath.vector3(self.resume_base_scale or 2.0, self.resume_base_scale or 2.0, 1.0)
+	local hover_scale = vmath.vector3(base.x * RESUME_HOVER_FACTOR, base.y * RESUME_HOVER_FACTOR, 1.0)
+	if hovering then
+		gui.cancel_animations(self.btn_resume, gui.PROP_SCALE)
+		gui.cancel_animations(self.btn_resume, gui.PROP_COLOR)
+		gui.animate(self.btn_resume, gui.PROP_SCALE, hover_scale, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		gui.animate(self.btn_resume, gui.PROP_COLOR, BTN_COLOR_HOVER, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	else
+		gui.cancel_animations(self.btn_resume, gui.PROP_SCALE)
+		gui.cancel_animations(self.btn_resume, gui.PROP_COLOR)
+		gui.animate(self.btn_resume, gui.PROP_SCALE, base, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		gui.animate(self.btn_resume, gui.PROP_COLOR, BTN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_lan_hover(self, hovering)
+	if hovering ~= self.lan_hover then
+		self.lan_hover = hovering
+		gui.cancel_animations(self.btn_lan, gui.PROP_COLOR)
+		gui.animate(self.btn_lan, gui.PROP_COLOR, hovering and LAN_COLOR_HOVER or LAN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+-- 🌡️ Hover del botón de unidades de temperatura (mismo estilo que el de idioma)
+local function animate_units_hover(self, hovering)
+	if hovering ~= self.units_hover then
+		self.units_hover = hovering
+		gui.cancel_animations(self.btn_units, gui.PROP_COLOR)
+		gui.animate(self.btn_units, gui.PROP_COLOR, hovering and LAN_COLOR_HOVER or LAN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+-- 🖥️ Hover del botón del overlay FPS (mismo estilo que el de idioma)
+local function animate_fps_hover(self, hovering)
+	if hovering ~= self.fps_hover then
+		self.fps_hover = hovering
+		gui.cancel_animations(self.btn_fps, gui.PROP_COLOR)
+		gui.animate(self.btn_fps, gui.PROP_COLOR, hovering and LAN_COLOR_HOVER or LAN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_option_hover(self, hovering)
+	if hovering ~= self.option_hover then
+		self.option_hover = hovering
+		gui.cancel_animations(self.lan_option_01, gui.PROP_COLOR)
+		gui.animate(self.lan_option_01, gui.PROP_COLOR, hovering and OPT_COLOR_HOVER or OPT_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_vol_down_hover(self, hovering)
+	if hovering ~= self.vol_down_hover then
+		self.vol_down_hover = hovering
+		gui.cancel_animations(self.btn_vol_down, gui.PROP_COLOR)
+		gui.animate(self.btn_vol_down, gui.PROP_COLOR, hovering and VOL_COLOR_HOVER or VOL_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_vol_up_hover(self, hovering)
+	if hovering ~= self.vol_up_hover then
+		self.vol_up_hover = hovering
+		gui.cancel_animations(self.btn_vol_up, gui.PROP_COLOR)
+		gui.animate(self.btn_vol_up, gui.PROP_COLOR, hovering and VOL_COLOR_HOVER or VOL_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_sfx_down_hover(self, hovering)
+	if hovering ~= self.sfx_down_hover then
+		self.sfx_down_hover = hovering
+		gui.cancel_animations(self.btn_sfx_down, gui.PROP_COLOR)
+		gui.animate(self.btn_sfx_down, gui.PROP_COLOR, hovering and VOL_COLOR_HOVER or VOL_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+local function animate_sfx_up_hover(self, hovering)
+	if hovering ~= self.sfx_up_hover then
+		self.sfx_up_hover = hovering
+		gui.cancel_animations(self.btn_sfx_up, gui.PROP_COLOR)
+		gui.animate(self.btn_sfx_up, gui.PROP_COLOR, hovering and VOL_COLOR_HOVER or VOL_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+-- 💾 Resuelve el mensaje de Importar/Exportar (GOTCHA #37): save_manager
+-- devuelve CLAVES neutras ("exported_html5"...) y aquí se traducen con
+-- general_text → M.save. detail es el parámetro opcional de %s (ruta/error).
+local function resolve_save_msg(self, key, detail)
+	local save_txt = (text_loader.load("general", self.current_lang) or {}).save or {}
+	if key == "exported_html5" then
+		return save_txt.exported_html5 or "Partida exportada como .json (descargada en el navegador)"
+	elseif key == "exported_desktop" then
+		return string.format(save_txt.exported_desktop or "Partida exportada en: %s", detail or "")
+	elseif key == "export_error" then
+		return save_txt.export_error or "Error al exportar la partida"
+	elseif key == "import_ok" then
+		return save_txt.import_ok or "Partida importada correctamente"
+	elseif key == "import_read_error" then
+		return save_txt.import_read_error or "No se pudo leer el archivo de guardado"
+	elseif key == "import_json_error" then
+		return string.format(save_txt.import_json_error or "Error al leer el JSON: %s", detail or "")
+	elseif key == "import_invalid_format" then
+		return save_txt.import_invalid_format or "El archivo de guardado no es válido"
+	elseif key == "import_unsupported_version" then
+		return save_txt.import_unsupported_version or "La version de la partida no es compatible"
+	end
+	-- Fallback: clave sin traducir
+	return key
+end
+
+function on_input(self, action_id, action)
+
+	-- ═══════════════════════════════════════════════════════
+	-- TECLA P → TOGGLE de pausa: abre si está cerrada, cierra si está abierta
+	-- (mismo comportamiento que ESC para cerrar; antes la P se "tragaba" la
+	-- pulsación sin hacer nada con la pausa ya abierta).
+	-- ═══════════════════════════════════════════════════════
+	if action_id == hash("key_p") and action.pressed then
+		if self.is_paused then
+			hide_pause(self)
+			return true
+		elseif self.pause_enabled then
+			show_pause(self)
+			return true
+		end
+	end
+
+	-- ═══════════════════════════════════════════════════════
+	-- TECLA ESC → desactivar pausa (sólo si está activa)
+	-- ═══════════════════════════════════════════════════════
+	if action_id == hash("key_esc") and action.pressed then
+		if self.is_paused then
+			hide_pause(self)
+			return true
+		end
+		-- Si no está en pausa, dejamos que ESC llegue a otros
+		-- scripts (player, exhibition, etc.)
+		return false
+	end
+
+	-- ═══════════════════════════════════════════════════════
+	-- SI NO ESTÁ EN PAUSA → ignorar el resto del input
+	-- ═══════════════════════════════════════════════════════
+	if not self.is_paused then
+		return false
+	end
+
+	-- ═══════════════════════════════════════════════════════
+	-- 🖱️ HOVER (action_id == nil para movimientos del ratón)
+	-- ═══════════════════════════════════════════════════════
+	if action_id == nil then
+		local hovering_resume = gui.pick_node(self.btn_resume, action.x, action.y)
+		if hovering_resume ~= self.resume_hover then
+			self.resume_hover = hovering_resume
+			animate_resume_hover(self, hovering_resume)
+		end
+
+		-- Hover del botón de idioma
+		local hovering_lan = gui.pick_node(self.btn_lan, action.x, action.y)
+			or gui.pick_node(self.lan_title, action.x, action.y)
+		animate_lan_hover(self, hovering_lan)
+
+		-- Hover de la opción del desplegable (sólo si está abierto)
+		if self.lang_dropdown_open then
+			local hovering_opt = gui.pick_node(self.lan_option_01, action.x, action.y)
+			animate_option_hover(self, hovering_opt)
+		else
+			animate_option_hover(self, false)
+		end
+
+		-- Hover de los botones de importar/exportar
+		local hovering_import = gui.pick_node(self.btn_import, action.x, action.y)
+		if hovering_import ~= self.import_hover then
+			self.import_hover = hovering_import
+			gui.cancel_animations(self.btn_import, gui.PROP_COLOR)
+			gui.animate(self.btn_import, gui.PROP_COLOR, hovering_import and BTN_COLOR_HOVER or BTN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		end
+
+		local hovering_export = gui.pick_node(self.btn_export, action.x, action.y)
+		if hovering_export ~= self.export_hover then
+			self.export_hover = hovering_export
+			gui.cancel_animations(self.btn_export, gui.PROP_COLOR)
+			gui.animate(self.btn_export, gui.PROP_COLOR, hovering_export and BTN_COLOR_HOVER or BTN_COLOR_NORMAL, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		end
+
+		-- Hover de los botones de volumen
+		local hovering_down = gui.pick_node(self.btn_vol_down, action.x, action.y)
+		animate_vol_down_hover(self, hovering_down)
+
+		local hovering_up = gui.pick_node(self.btn_vol_up, action.x, action.y)
+		animate_vol_up_hover(self, hovering_up)
+
+		-- 🎛️ Hover de los botones de efectos
+		local hovering_sfx_down = gui.pick_node(self.btn_sfx_down, action.x, action.y)
+		animate_sfx_down_hover(self, hovering_sfx_down)
+
+		local hovering_sfx_up = gui.pick_node(self.btn_sfx_up, action.x, action.y)
+		animate_sfx_up_hover(self, hovering_sfx_up)
+
+		-- 🌡️ Hover del botón de unidades de temperatura
+		local hovering_units = gui.pick_node(self.btn_units, action.x, action.y)
+		animate_units_hover(self, hovering_units)
+
+		-- 🖥️ Hover del botón del overlay FPS
+		local hovering_fps = gui.pick_node(self.btn_fps, action.x, action.y)
+		animate_fps_hover(self, hovering_fps)
+
+		return true
+	end
+
+	-- ═══════════════════════════════════════════════════════
+	-- 👆 CLICS (solo cuando el juego está pausado)
+	-- ═══════════════════════════════════════════════════════
+	if action_id == hash("touch") and action.pressed then
+		-- Botón de reanudar
+		if gui.pick_node(self.btn_resume, action.x, action.y) then
+			hide_pause(self)
+			return true
+		end
+
+		-- Si el desplegable está abierto, option_01 se comprueba primero
+		if self.lang_dropdown_open then
+			if gui.pick_node(self.lan_option_01, action.x, action.y) then
+				local new_lang = (self.current_lang == "es") and "en" or "es"
+				game_state.set_global("language", new_lang)
+				self.current_lang = new_lang
+				gui.set_text(self.lan_title, LANG_LABELS[new_lang])
+				local other = (new_lang == "es") and "en" or "es"
+				gui.set_text(self.lan_option_text, LANG_LABELS[other])
+				-- Actualizar textos al nuevo idioma
+				local new_texts = text_loader.load("general", new_lang)
+				gui.set_text(self.text_info, new_texts.ui.label_pause or "Juego en pausa")
+				gui.set_text(self.text_language, new_texts.ui.label_language or "Idioma")
+				gui.set_text(self.text_file_game, new_texts.ui.label_file_game or "Partida")
+				gui.set_text(self.text_vol_label, new_texts.ui.label_volume or "Música")
+				gui.set_text(self.text_sfx_label, new_texts.ui.label_sfx or "Efectos de sonido")
+				gui.set_text(self.text_units_label, new_texts.ui.label_temp_units or "Unidades")
+				gui.set_text(self.text_fps_label, new_texts.ui.label_fps or "Mostrar FPS")
+				refresh_fps(self)
+				self.lang_dropdown_open = false
+				gui.set_enabled(self.lan_header_bg, false)
+				gui.set_enabled(self.lan_option_01, false)
+				gui.set_enabled(self.lan_option_text, false)
+				dprint("[Pause] 🌐 Idioma cambiado a: " .. LANG_LABELS[new_lang])
+				return true
+			end
+		end
+
+		-- Botón de idioma → toggle desplegable
+		if gui.pick_node(self.btn_lan, action.x, action.y)
+		   or gui.pick_node(self.lan_title, action.x, action.y) then
+			self.lang_dropdown_open = not self.lang_dropdown_open
+			gui.set_enabled(self.lan_header_bg, self.lang_dropdown_open)
+			gui.set_enabled(self.lan_option_01, self.lang_dropdown_open)
+			gui.set_enabled(self.lan_option_text, self.lang_dropdown_open)
+			return true
+		end
+
+		-- Si el desplegable seguía abierto y no se pulsó nada → cerrar
+		if self.lang_dropdown_open then
+			self.lang_dropdown_open = false
+			gui.set_enabled(self.lan_header_bg, false)
+			gui.set_enabled(self.lan_option_01, false)
+			gui.set_enabled(self.lan_option_text, false)
+			return true
+		end
+
+		-- ═══════════════════════════════════════════════════════
+		-- 🎚️ BOTONES DE VOLUMEN
+		-- ═══════════════════════════════════════════════════════
+		if gui.pick_node(self.btn_vol_down, action.x, action.y) then
+			set_volume(self, self.volume - 0.1)
+			return true
+		end
+
+		if gui.pick_node(self.btn_vol_up, action.x, action.y) then
+			set_volume(self, self.volume + 0.1)
+			return true
+		end
+
+		-- 🎛️ Botones de efectos (grupo sfx)
+		if gui.pick_node(self.btn_sfx_down, action.x, action.y) then
+			set_sfx_volume(self, self.sfx_volume - 0.1)
+			return true
+		end
+
+		if gui.pick_node(self.btn_sfx_up, action.x, action.y) then
+			set_sfx_volume(self, self.sfx_volume + 0.1)
+			return true
+		end
+
+		-- Clic en el botón de sonido → toggle mute
+		if gui.pick_node(self.btn_sound, action.x, action.y) then
+			if self.volume > 0 then
+				set_volume(self, 0)
+			else
+				set_volume(self, 1.0)
+			end
+			return true
+		end
+
+		-- Clic en el botón de mute de EFECTOS → toggle (mismo comportamiento
+		--    que el de música: silenciar/restaurar al 100%)
+		if gui.pick_node(self.btn_sfx_sound, action.x, action.y) then
+			if self.sfx_volume > 0 then
+				set_sfx_volume(self, 0)
+			else
+				set_sfx_volume(self, 1.0)
+			end
+			return true
+		end
+
+		-- 🌡️ Botón de unidades de temperatura (°C ↔ °F). Preferencia del
+		--    jugador, persistida en game_state (temp_units); el HUD la aplica
+		--    solo a la visualización (la simulación sigue en °C).
+		if gui.pick_node(self.btn_units, action.x, action.y) then
+			self.temp_units = (self.temp_units == "c") and "f" or "c"
+			game_state.set_global("temp_units", self.temp_units)
+			refresh_units(self)
+			dprint("[Pause] 🌡️ Unidad de temperatura: " .. ((self.temp_units == "f") and "°F" or "°C"))
+			return true
+		end
+
+		-- 🖥️ Botón del overlay FPS (Sí ↔ No). Solo persiste en game_state
+		--    (fps_overlay): el HUD lo lee por polling en su update() (mismo
+		--    patrón que temp_units). NO se envía mensaje al HUD: pause vive en
+		--    bootstrap:/gui_library y el HUD en level_01 (/gui#hud) — una ruta
+		--    "/gui#hud" desde bootstrap no resuelve (el /gui solo existe con
+		--    level_01 cargado) → ERROR de dispatch.
+		if gui.pick_node(self.btn_fps, action.x, action.y) then
+			local enabled = game_state.get_global("fps_overlay")
+			if enabled == nil then enabled = true end
+			enabled = not enabled
+			game_state.set_global("fps_overlay", enabled)
+			refresh_fps(self)
+			dprint("[Pause] 🖥️ Overlay FPS: " .. (enabled and "activado" or "desactivado"))
+			return true
+		end
+
+		-- ═══════════════════════════════════════════════════════
+		-- 💾 BOTONES DE IMPORTAR / EXPORTAR
+		-- ═══════════════════════════════════════════════════════
+
+		if gui.pick_node(self.btn_export, action.x, action.y) then
+			local ok, key, detail = save_manager.export_save()
+			gui.set_text(self.text_info, resolve_save_msg(self, key, detail))
+			dprint("[Pause] Export: " .. tostring(key))
+			return true
+		end
+
+		if gui.pick_node(self.btn_import, action.x, action.y) then
+			local save_txt = (text_loader.load("general", self.current_lang) or {}).save or {}
+			gui.set_text(self.text_info, save_txt.select_file or "Selecciona un archivo .json...")
+			save_manager.request_import(function(json_str)
+				local ok, key, detail = save_manager.process_import(json_str)
+				gui.set_text(self.text_info, resolve_save_msg(self, key, detail))
+				dprint("[Pause] Import result: " .. tostring(key))
+			end)
+			return true
+		end
+
+		-- Clic fuera de cualquier botón → ignorar (no cerrar)
+		return true
+	end
+
+	-- Consumir cualquier otro input mientras estamos en pausa
+	return true
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧹 FINAL
+-- ═══════════════════════════════════════════════════════
+
+function final(self)
+	msg.post(".", "release_input_focus")
+
+	-- Asegurar que el juego se reanuda si el menú estaba abierto
+	if self.is_paused then
+		hide_pause(self)
+	end
+end

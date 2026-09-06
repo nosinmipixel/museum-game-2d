@@ -1,0 +1,31 @@
+images {
+  image: "/features/speech_bubble_npc/speech_bubble_npc.png"
+}
+images {
+  image: "/features/button_bubble/button_bubble.png"
+}
+images {
+  image: "/features/speech_bubble_player/bubble_general.png"
+}
+images {
+  image: "/features/speech_bubble_player/speech_bubble_player.png"
+}
+images {
+  image: "/features/speech_bubble_npc/speech_bubble_arrow_b.png"
+}
+images {
+  image: "/features/speech_bubble_npc/speech_bubble_b.png"
+}
+images {
+  image: "/features/speech_bubble_player/speech_bubble_a.png"
+}
+images {
+  image: "/features/speech_bubble_player/speech_bubble_arrow_a.png"
+}
+images {
+  image: "/features/speech_bubble_npc/speech_bubble_b_dark.png"
+}
+images {
+  image: "/features/speech_bubble_player/speech_bubble_a_dark.png"
+}
+extrude_borders: 2

@@ -1,0 +1,283 @@
+-- main/climate_controller.script
+-- ═══════════════════════════════════════════════════════
+-- 🌡️ CONTROLADOR DE CLIMA
+-- ═══════════════════════════════════════════════════════
+--
+--   Simula temperatura y humedad relativa en función de
+--   puertas abiertas/cerradas con la propiedad climate_control=true.
+--
+--   Lógica:
+--     - Puertas abiertas → temp y HR suben +rate/s hasta máx.
+--     - Puertas cerradas  → temp y HR bajan -rate/s hasta ideal.
+--     - Valores por defecto: temp_max = 35.0°C, hr_max = 75.0%
+--     - temp_ideal = 21.0°C, hr_ideal = 50.0%
+--     - Rango ideal: temp 20-22°C, HR 45-55%
+--   ⚙️ TODOS estos valores son configurables desde main/config.lua →
+--      M.balance (sección clima y stamina, punto único preprod/prod).
+--
+--   Warning levels (color HUD):
+--     0 = Verde  → Dentro del rango ideal
+--     1 = Naranja → Fuera de rango pero mejorando (tendencia ↓)
+--     2 = Rojo    → Fuera de rango y empeorando (tendencia ↑)
+--
+--   Mensajes esperados:
+--     "climate_door_opened" → { door_id = ... }
+--     "climate_door_closed" → { door_id = ... }
+--
+--   ⚠️ door_main NO participa en esta dinámica.
+--     Solo afectan las puertas con climate_control=true:
+--     door_side, door_front, door_service.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+
+-- ═══════════════════════════════════════════════════════
+-- ⚙️ CONSTANTES DE CLIMA (idénticas a Python)
+-- ═══════════════════════════════════════════════════════
+--   Centralizadas en main/config.lua → M.balance (punto único preprod/prod).
+--   El `or` conserva el valor anterior si una clave se borrara o faltara.
+local balance = config.balance or {}
+
+local TEMP_MAX = balance.temp_sim_max or 35.0
+local HR_MAX = balance.hr_sim_max or 75.0
+local TEMP_IDEAL = balance.temp_ideal or 21.0
+local HR_IDEAL = balance.hr_ideal or 50.0
+local CHANGE_RATE = balance.climate_change_rate or 0.1      -- ±0.1 por segundo
+local TICK_INTERVAL = balance.climate_tick_interval or 1.0  -- actualizar cada 1 segundo
+local SIREN_VOLUME = balance.siren_volume or 0.35           -- volumen de la sirena (0-1)
+
+-- ⚡ DRENAJE DE STAMINA (por segundo, según warning_level)
+local STAMINA_DRAIN_BASE = balance.stamina_drain_base or 0.01  -- nivel 0 (verde): mínimo
+local STAMINA_DRAIN_WARN = balance.stamina_drain_warn or 0.04  -- nivel 1 (naranja): moderado
+local STAMINA_DRAIN_CRIT = balance.stamina_drain_crit or 0.08  -- nivel 2 (rojo): acelerado
+
+-- ═══════════════════════════════════════════════════════
+-- 🐞 DEBUG PRINT (ACTIVAR / DESACTIVAR)
+-- ═══════════════════════════════════════════════════════
+local DEBUG_MODE = false   -- Cambiar a false para desactivar todos los prints de debug
+
+local function debug_print(...)
+	if DEBUG_MODE then
+		print(...)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔧 ESTADO INTERNO
+-- ═══════════════════════════════════════════════════════
+
+local function get_state()
+	-- Fallbacks al valor ideal configurable (main/config.lua → M.balance);
+	-- solo aplican si game_state no tuviera clima inicializado.
+	return {
+		temp_raw = game_state.get_global("temp_raw") or (balance.temp_ideal or 21.0),
+		hr_raw = game_state.get_global("hr_raw") or (balance.hr_ideal or 50.0),
+		temp_previous = game_state.get_global("temp_previous") or (balance.temp_ideal or 21.0),
+		hr_previous = game_state.get_global("hr_previous") or (balance.hr_ideal or 50.0),
+	}
+end
+
+local function save_state(temp_raw, hr_raw, temp_previous, hr_previous)
+	game_state.set_global("temp_raw", temp_raw)
+	game_state.set_global("hr_raw", hr_raw)
+	game_state.set_global("temp_previous", temp_previous)
+	game_state.set_global("hr_previous", hr_previous)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📊 CÁLCULO DE NIVEL DE ALERTA CLIMÁTICA
+-- ═══════════════════════════════════════════════════════
+
+local function update_climate_warning(temp_raw, hr_raw,
+	temp_trending_up, hr_trending_up)
+	-- Rango ideal configurable (main/config.lua → M.balance, claves temp_range_*/hr_range_*)
+	local temp_ok = (temp_raw >= (balance.temp_range_min or 20.0) and temp_raw <= (balance.temp_range_max or 22.0))
+	local hr_ok = (hr_raw >= (balance.hr_range_min or 45.0) and hr_raw <= (balance.hr_range_max or 55.0))
+
+	local warning_level
+	if temp_ok and hr_ok then
+		warning_level = 0  -- Verde: OK
+	elseif not temp_trending_up and not hr_trending_up then
+		warning_level = 1  -- Naranja: Fuera de rango pero mejorando
+	else
+		warning_level = 2  -- Rojo: Fuera de rango y empeorando
+	end
+
+	game_state.set_global("temp_ok", temp_ok)
+	game_state.set_global("hr_ok", hr_ok)
+	game_state.set_global("climate_warning_level", warning_level)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔄 TICK DE SIMULACIÓN (llamado cada 1s vía timer)
+-- ═══════════════════════════════════════════════════════
+
+local function climate_tick(doors_open_count)
+	local s = get_state()
+	local temp_raw = s.temp_raw
+	local hr_raw = s.hr_raw
+	local temp_previous = s.temp_previous
+	local hr_previous = s.hr_previous
+
+	-- Guardar valores previos antes de actualizar
+	local prev_temp = temp_raw
+	local prev_hr = hr_raw
+
+	if doors_open_count > 0 then
+		-- ↑ SUBIR: puertas abiertas → aumentar hasta máximo
+		temp_raw = math.min(TEMP_MAX, temp_raw + CHANGE_RATE)
+		hr_raw = math.min(HR_MAX, hr_raw + CHANGE_RATE)
+	else
+		-- ↓ BAJAR: todas cerradas → bajar hasta valor ideal
+		if temp_raw > TEMP_IDEAL then
+			temp_raw = math.max(TEMP_IDEAL, temp_raw - CHANGE_RATE)
+		end
+		if hr_raw > HR_IDEAL then
+			hr_raw = math.max(HR_IDEAL, hr_raw - CHANGE_RATE)
+		end
+	end
+
+	-- Calcular tendencias
+	local temp_trending_up = (temp_raw > temp_previous)
+	local hr_trending_up = (hr_raw > hr_previous)
+
+	-- Persistir en game_state
+	save_state(temp_raw, hr_raw, prev_temp, prev_hr)
+
+	game_state.set_global("temp_trending_up", temp_trending_up)
+	game_state.set_global("hr_trending_up", hr_trending_up)
+
+	-- Actualizar nivel de alerta
+	update_climate_warning(temp_raw, hr_raw, temp_trending_up, hr_trending_up)
+
+	local warning_level = game_state.get_global("climate_warning_level") or 0
+
+	debug_print(string.format(
+	"[Clima] Puertas: %d | Temp: %.1f°C (%s) | HR: %.1f%% (%s) | Warning: %d",
+	doors_open_count,
+	temp_raw, temp_trending_up and "↑" or "↓",
+	hr_raw, hr_trending_up and "↑" or "↓",
+	warning_level
+))
+
+-- Retornar el nuevo warning_level para que el caller pueda manejar la sirena
+return warning_level
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔢 UTILIDAD: contar elementos de una tabla
+-- ═══════════════════════════════════════════════════════
+
+local function table_count(t)
+local n = 0
+for _ in pairs(t or {}) do
+	n = n + 1
+end
+return n
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⚡ DRENAJE DE STAMINA SEGÚN CONDICIONES CLIMÁTICAS
+-- ═══════════════════════════════════════════════════════
+--
+--   La stamina se reduce cada tick (1s) a un ritmo que
+--   depende del warning_level:
+--     - Nivel 0 (verde):   drenaje base muy lento
+--     - Nivel 1 (naranja): drenaje moderado
+--     - Nivel 2 (rojo):    drenaje acelerado
+--
+--   La stamina nunca baja de 0.
+-- ═══════════════════════════════════════════════════════
+
+local function drain_stamina(warning_level)
+local stamina = game_state.get_global("stamina") or 100
+if stamina <= 0 then return end  -- ya vacía, nada que drenar
+
+-- Seleccionar tasa de drenaje según nivel de alerta
+local drain_rate
+if warning_level == 2 then
+	drain_rate = STAMINA_DRAIN_CRIT
+elseif warning_level == 1 then
+	drain_rate = STAMINA_DRAIN_WARN
+else
+	drain_rate = STAMINA_DRAIN_BASE
+end
+
+-- Aplicar drenaje (nunca bajar de 0)
+local new_stamina = math.max(0, stamina - drain_rate)
+game_state.set_global("stamina", new_stamina)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔊 SIRENA DE ALERTA CLIMÁTICA
+-- ═══════════════════════════════════════════════════════
+
+local function update_siren(self, warning_level)
+if warning_level == 2 and not self.siren_playing then
+	-- Activar sirena: warning level 2 (rojo, empeorando)
+	self.siren_playing = true
+	sound.play("#siren", { gain = SIREN_VOLUME })
+	debug_print("[ClimateController] 🚨 SIRENA ACTIVADA - Condiciones climáticas críticas")
+
+elseif warning_level ~= 2 and self.siren_playing then
+	-- Desactivar sirena: volvió a nivel 0 o 1
+	self.siren_playing = false
+	sound.stop("#siren")
+	debug_print("[ClimateController] 🔇 Sirena desactivada - Condiciones mejorando")
+end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DE DEFOLD
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+-- Contador de puertas con climate_control=true actualmente abiertas
+-- Usamos un set { [door_id_string] = true } para evitar duplicados
+-- si una puerta envía el mensaje más de una vez.
+self.open_climate_doors = {}
+
+-- Estado de la sirena
+self.siren_playing = false
+
+-- Iniciar el timer de simulación (1 tick/segundo)
+timer.delay(TICK_INTERVAL, true, function()
+	if not go.exists(go.get_id()) then
+		return  -- el GO fue destruido, detener timer
+	end
+	local warning_level = climate_tick(table_count(self.open_climate_doors))
+	if warning_level then
+		update_siren(self, warning_level)
+		drain_stamina(warning_level)
+	end
+end)
+
+debug_print("[ClimateController] Iniciado. Temp ideal: " .. TEMP_IDEAL .. "°C, HR ideal: " .. HR_IDEAL .. "%")
+end
+
+function final(self)
+	-- 🔇 Detener sirena si está sonando al destruirse el GO
+	if self.siren_playing then
+		self.siren_playing = false
+		pcall(function() sound.stop("#siren") end)
+		debug_print("[ClimateController] Sirena detenida en final()")
+	end
+end
+
+function on_message(self, message_id, message, sender)
+if message_id == hash("climate_door_opened") then
+	local door_id = tostring(message.door_id)
+	self.open_climate_doors[door_id] = true
+	debug_print("[ClimateController] Puerta climática abierta: " .. door_id .. " (total: " .. table_count(self.open_climate_doors) .. ")")
+
+elseif message_id == hash("climate_door_closed") then
+	local door_id = tostring(message.door_id)
+	self.open_climate_doors[door_id] = nil
+	debug_print("[ClimateController] Puerta climática cerrada: " .. door_id .. " (total: " .. table_count(self.open_climate_doors) .. ")")
+end
+end

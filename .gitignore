@@ -1,0 +1,50 @@
+# Directorios de compilación y caché de Defold
+/build
+/.internal
+/.editor_settings
+
+# Configuración compartida del editor (generada por Defold, vacía)
+/project.shared_editor_settings
+
+# Archivos generados de certificados y firmas (si aplica)
+/*.public.der
+/*.private.der
+
+# Dependencias externas o builds web temporales
+/js-web/
+/node_modules/
+.deps
+.lock-wscript
+
+# Herramientas y compiladores externos o IDEs
+.externalToolBuilders
+.project
+.cproject
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Archivos temporales de compilación en Python
+*.pyc
+
+# Builds y temporales
+Builds/
+*.log
+*.tmp
+
+# Archivos fuente de edición de imágenes (GIMP y Pixelorama)
+# No se suben: el juego solo usa los PNG exportados
+*.xcf
+*.pxo
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Instrucciones para agentes de IA (opcional: si se quieren versionar, borrar estas dos líneas)
+AGENTS.md
+CLAUDE.md

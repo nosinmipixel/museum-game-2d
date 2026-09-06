@@ -1,0 +1,581 @@
+-- intro/gui/intro.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 🎬 GUI DE LA INTRODUCCIÓN
+-- ═══════════════════════════════════════════════════════
+--
+--   Pantalla de introducción: botones start/continue/new_game,
+--   selector de idioma, sinopsis (3 páginas, controles PC vs
+--   móvil) y aviso de guardado en marquee (solo HTML5).
+--   Flujo: sin guardado → btn_start; con guardado →
+--   btn_continue + btn_new_game (confirmación Sí/No).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "start_game"/"set_language"/"reset_game" (intro_manager)
+--   Mensajes que RECIBE (on_message):
+--     ← "mouse_event"     (desde intro_manager)
+--     ← "show_gui"/"hide_gui"/"refresh_texts"/"set_has_save"/"set_language"
+--
+--   ⚠️ El input focus lo gestiona intro_manager.script
+--   (acquire_input_focus no funciona en .gui_script de proxy).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_INTRO_GUI = false
+local dprint = config.make_log(DEBUG_INTRO_GUI)
+local platform    = require "main.platform"   -- 📱 is_touch() → diana ampliada solo en táctil
+
+-- Detectar si se ejecuta en navegador (HTML5).
+-- El módulo html5 es un built-in del runtime (no un .lua), así que
+-- no se puede require. Lo detectamos como global: existe en HTML5, nil en desktop.
+local is_html5 = (type(html5) == "table" and type(html5.run) == "function")
+
+-- ============================================
+-- MARQUEE: animación continua de warning_text
+-- ============================================
+
+local MARQUEE_START_X = 1920  -- Fuera de pantalla por la derecha
+local MARQUEE_END_X = -1920   -- Fuera de pantalla por la izquierda
+local MARQUEE_DURATION = 15.0 -- Segundos en cruzar la pantalla
+-- ⏸️ Pausa entre cruces del marquee (aviso de guardado): tras salir por la
+--    izquierda, la pantalla queda limpia durante MARQUEE_PAUSE segundos antes
+--    de que el aviso vuelva a entrar por la derecha. Evita el ruido visual
+--    del marquee continuo (banner blindness) manteniendo el aviso periódico
+--    mientras el jugador no avance hacia la escena principal.
+--    ⚙️ CONFIGURABLE en main/config.lua → M.balance
+--    (.intro_warning_marquee_pause) — preprod: 8 · prod: 8
+local MARQUEE_PAUSE = config.balance.intro_warning_marquee_pause or 8.0
+
+local function start_marquee(self)
+	local warn = gui.get_node("warning_text")
+	if not warn then return end
+
+	-- Idempotente: cancelar un timer pendiente (p. ej. si show_gui llegara dos
+	-- veces sin hide_gui entre medias) para no duplicar el ciclo.
+	if self._marquee_timer then timer.cancel(self._marquee_timer) self._marquee_timer = nil end
+
+	self._marquee_active = true
+
+	-- ⚠️ GOTCHA (callbacks de animación): en esta versión de Defold el callback
+	-- de gui.animate NO es fiable — mismo problema documentado con
+	-- sprite.play_flipbook en player.script (DEV_GOTCHAS). El marquee heredado
+	-- dependía de ese callback para el loop y por eso el aviso solo cruzaba
+	-- UNA vez. El ciclo NO depende de él: un timer cubre el cruce
+	-- (MARQUEE_DURATION) + la pausa (MARQUEE_PAUSE) y relanza la animación
+	-- desde el inicio. El callback se deja a nil (si otra versión lo invocara,
+	-- no hace nada → nunca hay doble ciclo).
+	local function cycle()
+		if not self._marquee_active then return end
+		gui.set_position(warn, vmath.vector3(MARQUEE_START_X, 65, 0))
+		gui.animate(warn, gui.PROP_POSITION, vmath.vector3(MARQUEE_END_X, 65, 0),
+		            gui.EASING_LINEAR, MARQUEE_DURATION, 0.0, nil, nil)
+		self._marquee_timer = timer.delay(MARQUEE_DURATION + MARQUEE_PAUSE, false, function()
+			self._marquee_timer = nil
+			cycle()
+		end)
+	end
+	cycle()
+end
+
+local function stop_marquee(self)
+	self._marquee_active = false
+	if self._marquee_timer then
+		timer.cancel(self._marquee_timer)
+		self._marquee_timer = nil
+	end
+	local warn = gui.get_node("warning_text")
+	if warn then
+		gui.cancel_animations(warn, gui.PROP_POSITION)
+		gui.cancel_animations(warn, gui.PROP_COLOR)
+	end
+end
+
+-- Lista de botones con hover (normales + navegación)
+local BUTTON_IDS = { "btn_es", "btn_en", "btn_continue", "btn_new_game", "btn_start", "btn_forward", "btn_backward" }
+
+-- Botones del diálogo de alerta
+local DIALOG_BUTTON_IDS = { "window_btn_yes", "window_btn_no" }
+
+-- Parámetros de hover animado (multiplicador sobre la escala base de cada nodo)
+local HOVER_SCALE_FACTOR = 1.08
+local HOVER_TINT         = 0.35
+local HOVER_DURATION     = 0.12
+
+-- 📱 Diana táctil ampliada (btn_forward/btn_backward): en landscape móvil la
+--    GUI se reduce con FIT (~0.56×) y las flechas quedan en ~35px CSS, por
+--    debajo de los 44px recomendados. SOLO en táctil se escala el nodo 1.5×:
+--    gui.pick_node usa el boundary del nodo (incluye scale — verificado en
+--    engine/gui/src/gui.cpp, PickNode), así que crece también el área de pick
+--    (~53px CSS). En PC base=1.0 → aspecto y hover idénticos a antes.
+local TOUCH_NAV_SCALE = 1.5
+local TOUCH_NAV_IDS   = { btn_forward = true, btn_backward = true }
+
+-- 🖱️ Sonido de clic de botón (mouse-click.sound, grupo "sfx" → respeta el
+-- slider de efectos del audio_manager). Componente montado en el GO gui_intro
+-- (intro.collection), mismo patrón que hud.gui_script con #smooth_notification.
+-- ⚠️ GOTCHA: en un .gui_script NO se puede usar go.* (solo .script); si el
+-- componente no existiera, sound.play solo loguearía un warning y no rompe.
+local function play_click_sound()
+  sound.play("#mouse_click")
+end
+
+-- 🛡️ Anti-doble evento de navegación (btn_forward/btn_backward):
+--    el input binding declara "touch" (MOUSE_BUTTON_1) y "click"
+--    (MOUSE_BUTTON_LEFT), que son el MISMO botón físico en Defold → un solo
+--    clic genera 2 mouse_event. nav_locked absorbe el segundo para no avanzar
+--    dos páginas de golpe.
+--    El desbloqueo NO puede depender de mousemove (en táctil no hay hover):
+--    se usa un cooldown temporal que se desbloquea solo en TODAS las
+--    plataformas (el mousemove de desktop sigue desbloqueando antes, mejor UX).
+local NAV_COOLDOWN = 0.3  -- segundos
+
+-- Estado global del módulo
+local texts           = {}
+local current_lang     = "es"
+local has_save         = false
+local current_synopsis = 1
+local gui_visible     = false  -- false durante la animación inicial; show_gui la pondrá a true
+
+-- ============================================
+-- UI REFRESH
+-- ============================================
+
+local function refresh_ui(self)
+  local t = texts.intro
+  if not t then return end
+
+  gui.set_text(gui.get_node("title_text"), t.title)
+
+  -- Página de contenido: synopsis_1, synopsis_2, inputs_info
+  -- 📱 En táctil/móvil la página 3 muestra la variante de controles táctiles
+  --    (inputs_info_mobile); en PC/ratón, la clásica con teclado (inputs_info).
+  if current_synopsis <= 2 then
+    local page_key = "synopsis_" .. current_synopsis
+    gui.set_text(gui.get_node("intro_text"), t[page_key] or "")
+  else
+    local inputs_key = platform.is_touch() and "inputs_info_mobile" or "inputs_info"
+    gui.set_text(gui.get_node("intro_text"), t[inputs_key] or "")
+  end
+
+  -- Mientras la GUI esté oculta (animación inicial), solo actualizar textos
+  -- sin habilitar botones. set_language / set_has_save llaman a refresh_ui
+  -- pero no deben activar los botones hasta que show_gui lo indique.
+  if not gui_visible then
+    return
+  end
+
+  -- Botones de navegación (siempre visibles si no hay alerta)
+  gui.set_enabled(gui.get_node("btn_forward"),  current_synopsis < 3)
+  gui.set_enabled(gui.get_node("btn_backward"), current_synopsis > 1)
+
+  -- Botones de idioma (siempre habilitados fuera de alerta)
+  gui.set_enabled(gui.get_node("btn_es"), true)
+  gui.set_enabled(gui.get_node("btn_en"), true)
+  gui.set_text(gui.get_node("text_btn_es"), t.btn_es)
+  gui.set_text(gui.get_node("text_btn_en"), t.btn_en)
+
+  -- Texto de aviso de guardado: aplanar saltos de línea a una sola línea (marquee)
+  local warning_flat = (t.warning_save or ""):gsub("\n", "   ")
+  gui.set_text(gui.get_node("warning_text"), warning_flat)
+
+  -- Botones de acción según estado de guardado
+  if has_save then
+    -- Con partida guardada: ocultar btn_start, mostrar continue + new_game
+    gui.set_enabled(gui.get_node("btn_start"),     false)
+    gui.set_enabled(gui.get_node("btn_continue"),  true)
+    gui.set_enabled(gui.get_node("btn_new_game"),  true)
+    gui.set_text(gui.get_node("text_btn_continue"), t.btn_continue)
+    gui.set_text(gui.get_node("text_btn_new_game"), t.btn_new_game)
+  else
+    -- Sin partida guardada: mostrar solo btn_start
+    gui.set_enabled(gui.get_node("btn_start"),     true)
+    gui.set_enabled(gui.get_node("btn_continue"),  false)
+    gui.set_enabled(gui.get_node("btn_new_game"),  false)
+    gui.set_text(gui.get_node("text_btn_start"),   t.btn_start)
+  end
+
+  -- Asegurar que la ventana de alerta está oculta al refrescar
+  gui.set_enabled(gui.get_node("window_alert"),   false)
+  gui.set_enabled(gui.get_node("window_btn_yes"), false)
+  gui.set_enabled(gui.get_node("window_btn_no"),  false)
+end
+
+-- ============================================
+-- TEXT LOADING
+-- ============================================
+
+local function load_texts(lang)
+  local all = text_loader.load("general", lang)
+  texts = all or {}
+  refresh_ui()
+end
+
+-- ============================================
+-- HOVER ANIMATION
+-- ============================================
+
+local function animate_hover(self, button_id, hovering, orig_colors, hover_colors)
+  local node = gui.get_node(button_id)
+  if not node then return end
+
+  -- Escala base del nodo (1.0 en PC; 1.5 en táctil para las flechas de
+  -- navegación): el hover multiplica la base sin perderla.
+  local base = self.base_scale[button_id] or vmath.vector3(1.0, 1.0, 1.0)
+
+  gui.cancel_animations(node, gui.PROP_SCALE)
+  gui.cancel_animations(node, gui.PROP_COLOR)
+
+  if hovering then
+    gui.animate(node, gui.PROP_SCALE,
+                vmath.vector3(base.x * HOVER_SCALE_FACTOR, base.y * HOVER_SCALE_FACTOR, 1.0),
+                gui.EASING_OUTQUAD, HOVER_DURATION)
+    gui.animate(node, gui.PROP_COLOR, hover_colors[button_id], gui.EASING_OUTQUAD, HOVER_DURATION)
+  else
+    gui.animate(node, gui.PROP_SCALE, base, gui.EASING_OUTQUAD, HOVER_DURATION)
+    gui.animate(node, gui.PROP_COLOR, orig_colors[button_id], gui.EASING_OUTQUAD, HOVER_DURATION)
+  end
+end
+
+local function reset_hover(self)
+  if self.hovered_button then
+    local node = gui.get_node(self.hovered_button)
+    if node then
+      gui.cancel_animations(node, gui.PROP_SCALE)
+      gui.cancel_animations(node, gui.PROP_COLOR)
+      gui.set_scale(node, self.base_scale[self.hovered_button] or vmath.vector3(1.0, 1.0, 1.0))
+      gui.set_color(node, self.orig_colors[self.hovered_button])
+    end
+    self.hovered_button = nil
+  end
+end
+
+-- ============================================
+-- UI: ALERTA DE CONFIRMACIÓN
+-- ============================================
+
+local function show_alert(self)
+  self.showing_alert = true
+
+  -- Texto de confirmación desde textos
+  local confirm = (texts.dialogs and texts.dialogs.confirm_reset) or ""
+  gui.set_text(gui.get_node("window_text_alert"), confirm)
+
+  -- Texto de botones Sí/No desde textos
+  gui.set_text(gui.get_node("text_btn_yes"), (texts.ui and texts.ui.btn_yes) or "Sí")
+  gui.set_text(gui.get_node("text_btn_no"),  (texts.ui and texts.ui.btn_no) or "No")
+
+  -- Mostrar ventana de alerta
+  gui.set_enabled(gui.get_node("window_alert"),    true)
+  gui.set_enabled(gui.get_node("window_btn_yes"),  true)
+  gui.set_enabled(gui.get_node("window_btn_no"),   true)
+
+  -- Deshabilitar todos los botones normales
+  for _, id in ipairs(BUTTON_IDS) do
+    gui.set_enabled(gui.get_node(id), false)
+  end
+
+  reset_hover(self)
+end
+
+local function hide_alert(self)
+  self.showing_alert = false
+
+  -- Ocultar ventana de alerta
+  gui.set_enabled(gui.get_node("window_alert"),    false)
+  gui.set_enabled(gui.get_node("window_btn_yes"),  false)
+  gui.set_enabled(gui.get_node("window_btn_no"),   false)
+
+  -- Restaurar botones según estado de guardado
+  refresh_ui(self)
+end
+
+-- ============================================
+-- MOUSE EVENTS
+-- ============================================
+
+-- ⚠️ gui.pick_node() es puramente geométrico (by design en Defold — ver GOTCHA
+-- #10 de DEV_GOTCHAS.md): devuelve true aunque el nodo esté DESHABILITADO o
+-- INVISIBLE. El único gate fiable es comprobar gui.is_enabled() antes.
+local function pick_enabled(node, x, y)
+  return node and gui.is_enabled(node) and gui.pick_node(node, x, y)
+end
+
+local function handle_mouse_move(self, x, y)
+  -- Cualquier movimiento desbloquea navegación de inmediato en desktop
+  -- (el desbloqueo principal es el cooldown NAV_COOLDOWN de handle_click,
+  --  que cubre el táctil donde no llegan eventos de movimiento)
+  self.nav_locked = false
+
+  local new_hover = nil
+  local ids = self.showing_alert and DIALOG_BUTTON_IDS or BUTTON_IDS
+
+  for _, id in ipairs(ids) do
+    if pick_enabled(gui.get_node(id), x, y) then
+      new_hover = id
+      break
+    end
+  end
+
+  if new_hover ~= self.hovered_button then
+    if self.hovered_button then
+      animate_hover(self, self.hovered_button, false, self.orig_colors, self.hover_colors)
+    end
+    if new_hover then
+      animate_hover(self, new_hover, true, self.orig_colors, self.hover_colors)
+    end
+    self.hovered_button = new_hover
+  end
+end
+
+local function handle_click(self, x, y)
+  reset_hover(self)
+
+  -- ========================================
+  -- MODO ALERTA: solo Sí / No
+  -- ========================================
+  if self.showing_alert then
+    if pick_enabled(gui.get_node("window_btn_yes"), x, y) then
+      play_click_sound()
+      hide_alert(self)
+      msg.post("/intro_manager#intro_manager", "reset_game")
+      return
+    end
+
+    if pick_enabled(gui.get_node("window_btn_no"), x, y) then
+      play_click_sound()
+      hide_alert(self)
+      return
+    end
+    return  -- Ignorar cualquier otro clic en modo alerta
+  end
+
+  -- ========================================
+  -- MODO NORMAL: selector de idioma
+  -- ========================================
+
+  if pick_enabled(gui.get_node("btn_es"), x, y) then
+    play_click_sound()
+    msg.post("/intro_manager#intro_manager", "set_language", { lang = "es" })
+    current_lang = "es"
+    load_texts("es")
+    return
+  end
+
+  if pick_enabled(gui.get_node("btn_en"), x, y) then
+    play_click_sound()
+    msg.post("/intro_manager#intro_manager", "set_language", { lang = "en" })
+    current_lang = "en"
+    load_texts("en")
+    return
+  end
+
+  -- ========================================
+  -- MODO NORMAL: acciones de juego
+  -- ========================================
+
+  if has_save and pick_enabled(gui.get_node("btn_continue"), x, y) then
+    play_click_sound()
+    msg.post("/intro_manager#intro_manager", "start_game")
+    return
+  end
+
+  if has_save and pick_enabled(gui.get_node("btn_new_game"), x, y) then
+    play_click_sound()
+    show_alert(self)
+    return
+  end
+
+  if pick_enabled(gui.get_node("btn_start"), x, y) then
+    play_click_sound()
+    msg.post("/intro_manager#intro_manager", "start_game")
+    return
+  end
+
+  -- ========================================
+  -- MODO NORMAL: navegación de sinopsis
+  -- ========================================
+
+  if not self.nav_locked then
+    if pick_enabled(gui.get_node("btn_forward"), x, y) and current_synopsis < 3 then
+      play_click_sound()
+      self.nav_locked = true
+      timer.delay(NAV_COOLDOWN, false, function() self.nav_locked = false end)
+      current_synopsis = current_synopsis + 1
+      refresh_ui(self)
+      return
+    end
+
+    if pick_enabled(gui.get_node("btn_backward"), x, y) and current_synopsis > 1 then
+      play_click_sound()
+      self.nav_locked = true
+      timer.delay(NAV_COOLDOWN, false, function() self.nav_locked = false end)
+      current_synopsis = current_synopsis - 1
+      refresh_ui(self)
+      return
+    end
+  end
+end
+
+-- ============================================
+-- LIFECYCLE
+-- ============================================
+
+function init(self)
+  current_lang = text_loader.get_current_lang()
+  load_texts(current_lang)
+
+  -- Almacenar colores originales, hover y escala base de cada nodo
+  self.orig_colors  = {}
+  self.hover_colors = {}
+  self.base_scale   = {}
+  for _, id in ipairs(BUTTON_IDS) do
+    local node = gui.get_node(id)
+    if node then
+      -- 📱 Escala base: en táctil, las flechas de navegación se amplían
+      --    (visual y área de pick) para compensar la reducción FIT de la GUI
+      --    en móvil. En PC (o sin detección), base = 1.0 → sin cambios.
+      local base = 1.0
+      if platform.is_touch() and TOUCH_NAV_IDS[id] then
+        base = TOUCH_NAV_SCALE
+        gui.set_scale(node, vmath.vector3(base, base, 1.0))
+      end
+      self.base_scale[id] = vmath.vector3(base, base, 1.0)
+
+      local orig = gui.get_color(node)
+      self.orig_colors[id] = orig
+      self.hover_colors[id] = vmath.vector4(
+        math.min(orig.x + HOVER_TINT, 1.0),
+        math.min(orig.y + HOVER_TINT, 1.0),
+        math.min(orig.z + HOVER_TINT, 1.0),
+        orig.w
+      )
+    end
+  end
+  -- Colores y escala base para los botones del diálogo (siempre 1.0)
+  for _, id in ipairs(DIALOG_BUTTON_IDS) do
+    local node = gui.get_node(id)
+    if node then
+      self.base_scale[id] = vmath.vector3(1.0, 1.0, 1.0)
+      local orig = gui.get_color(node)
+      self.orig_colors[id] = orig
+      self.hover_colors[id] = vmath.vector4(
+        math.min(orig.x + HOVER_TINT, 1.0),
+        math.min(orig.y + HOVER_TINT, 1.0),
+        math.min(orig.z + HOVER_TINT, 1.0),
+        orig.w
+      )
+    end
+  end
+
+  current_synopsis  = 1
+  self.nav_locked   = false
+  self.showing_alert = false
+  self.hovered_button = nil	-- Iniciar oculta: la animación inicial mostrará la GUI al terminar
+	gui_visible = false
+	gui.set_enabled(gui.get_node("bg"),          false)
+	gui.set_enabled(gui.get_node("title_text"),  false)
+	gui.set_enabled(gui.get_node("intro_text"),  false)
+	gui.set_enabled(gui.get_node("warning_text"), false)
+	for _, id in ipairs(BUTTON_IDS) do
+		gui.set_enabled(gui.get_node(id), false)
+	end
+	for _, id in ipairs(DIALOG_BUTTON_IDS) do
+		gui.set_enabled(gui.get_node(id), false)
+	end
+	gui.set_enabled(gui.get_node("window_alert"),    false)
+	gui.set_enabled(gui.get_node("window_btn_yes"),  false)
+	gui.set_enabled(gui.get_node("window_btn_no"),   false)
+
+  dprint("[Intro GUI] Inicializado. Botones: " .. #BUTTON_IDS)
+end
+
+function final(self)
+  -- No release_input_focus aquí porque el focus lo gestiona intro_manager
+end
+
+-- ============================================
+-- MESSAGES
+-- ============================================
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("mouse_event") then
+    -- 🚫 Root fix (GOTCHA #10): la GUI está oculta durante la animación
+    -- inicial (gui_visible = false) pero gui.pick_node() es geométrico y
+    -- seguiría detectando los botones deshabilitados. Ignorar TODOS los
+    -- eventos de ratón mientras la GUI no esté visible.
+    if not gui_visible then return end
+
+    local action_id = message.action_id
+    local x = message.x
+    local y = message.y
+
+    if action_id == nil then
+      handle_mouse_move(self, x, y)
+    elseif message.pressed then
+      handle_click(self, x, y)
+    end
+
+  elseif message_id == hash("set_language") then
+    current_lang = message.lang
+    if self.showing_alert then
+      hide_alert(self)  -- Cerrar alerta si estaba abierta
+    end
+    reset_hover(self)
+    load_texts(current_lang)
+
+  elseif message_id == hash("set_has_save") then
+    has_save = message.has_save
+    if self.showing_alert then
+      hide_alert(self)
+    end
+    refresh_ui(self)
+
+  elseif message_id == hash("hide_gui") then
+    -- Ocultar todos los nodos de la GUI durante la animación inicial
+    gui_visible = false
+    stop_marquee(self)
+    gui.set_enabled(gui.get_node("bg"),          false)
+    gui.set_enabled(gui.get_node("title_text"),  false)
+    gui.set_enabled(gui.get_node("intro_text"),  false)
+    gui.set_enabled(gui.get_node("warning_text"), false)
+    for _, id in ipairs(BUTTON_IDS) do
+      gui.set_enabled(gui.get_node(id), false)
+    end
+    for _, id in ipairs(DIALOG_BUTTON_IDS) do
+      gui.set_enabled(gui.get_node(id), false)
+    end
+    gui.set_enabled(gui.get_node("window_alert"),    false)
+    gui.set_enabled(gui.get_node("window_btn_yes"),  false)
+    gui.set_enabled(gui.get_node("window_btn_no"),   false)
+
+  elseif message_id == hash("show_gui") then
+    -- Mostrar la GUI después de la animación inicial
+    gui_visible = true
+    gui.set_enabled(gui.get_node("bg"),          true)
+    gui.set_enabled(gui.get_node("title_text"),  true)
+    gui.set_enabled(gui.get_node("intro_text"),  true)
+    refresh_ui(self)
+
+    -- 🎬 WARNING TEXT: marquee solo en navegador; oculto en desktop
+    if is_html5 then
+      local warn = gui.get_node("warning_text")
+      if warn then
+        -- Marquee continuo: entra por derecha, sale por izquierda, loop
+        gui.set_enabled(warn, true)
+        gui.set_color(warn, vmath.vector4(0.8, 0.7, 0.5, 0.85))
+        start_marquee(self)
+      end
+    end
+
+  elseif message_id == hash("refresh_texts") then
+    load_texts(current_lang)
+  end
+end

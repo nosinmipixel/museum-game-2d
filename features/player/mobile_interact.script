@@ -1,0 +1,288 @@
+-- features/player/mobile_interact.script
+-- ═══════════════════════════════════════════════════════
+-- 📱 BOTÓN OPTION = "TECLA E" TÁCTIL (Fase 4 docs/plans/archive/MOBILE_CONTROLS_PLAN.md)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+--   Sensor de proximidad montado en el player (componente player_interact
+--   + collision object TRIGGER group "cursor" / mask "interactivable",
+--   caja 180×180 — data 90,90,10 — para cubrir el rango global
+--   interaction_range=80 de main/config.lua; ajustar el trigger a mano en
+--   player.go si cambia el rango).
+--
+--   Cómo funciona:
+--     1. El trigger detecta TODOS los interactables cercanos (NPCs,
+--        objetos de exhibición ME_*, estanterías, puertas, kits, gato…)
+--        SIN tocar sus .go: todos usan group "interactivable" + mask
+--        "cursor" — el mismo par que ya usa el cursor.
+--     2. Cada frame se selecciona el objetivo FACING-FIRST: gana el candidato
+--        más alineado con la dirección de movimiento del jugador (la última
+--        dirección, aiming.state.facing_dir — el jugador interactúa con lo que
+--        tiene DELANTE), puntuando contra el PUNTO DE INTERACCIÓN (centro de
+--        la caja cursor — puertas y armarios registran el suyo, GOTCHA #31).
+--        La distancia solo desempata a igual alineación. Sin facing (nunca se
+--        movió) → el más cercano. Se excluyen los candidatos ocultos tras un
+--        armario cerrado y los armarios abiertos con contenido (el bote
+--        interior es el objetivo). Ver GOTCHA #31.
+--     3. El objetivo se resalta con mouse_hover (tint) — todos los
+--        interactables ya reaccionan al hover — y se des-resalta al
+--        cambiar. Esto resuelve la ambigüedad de objetos muy juntos
+--        (ej: ME_4946 ↔ ME_4947 a ~45 uds).
+--     4. web_controls envía "mobile_interact" → se reenvía "interact"
+--        al objetivo resaltado (mismo contrato que el cursor).
+--
+--   Gates de estado (mismo patrón que player_spray):
+--     · player_died / player_respawned  → no interactuar muerto
+--     · lock_dialog / unlock_dialog      → no interactuar en diálogo
+--   lock_dialog/unlock_dialog llegan GRATIS: dialogue_manager los postea
+--   al GO /player, donde vive este componente (por eso NO es un GO hijo).
+
+local platform = require "main.platform"
+local npc_spawn_state = require "main.npc_spawn_state"
+local cabinet_state = require "main.cabinet_state"
+local interactable_box = require "main.interactable_box"
+local aiming = require "features.player.aiming"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua)
+local DEBUG_INTERACT = false
+local dprint = config.make_log(DEBUG_INTERACT)
+
+-- Único grupo que detecta el sensor (GOTCHA #5: usar other_group)
+local INTERACTABLE_GROUP = hash("interactivable")
+
+-- 📏 Rango GLOBAL de interacción (main/config.lua → M.balance.interaction_range):
+-- el jugador solo puede resaltar/interactuar con objetos dentro de esta
+-- distancia (medida contra el PUNTO DE INTERACCIÓN, world_point). Fuera de
+-- rango un candidato no compite ni se resalta.
+local INTERACTION_RANGE = config.balance.interaction_range or 80
+
+-- ═══════════════════════════════════════════════════════
+-- FUNCIONES LOCALES (declaradas ANTES de on_message, GOTCHA #1)
+-- ═══════════════════════════════════════════════════════
+
+-- Punto del mundo contra el que puntuar (dot y distancia): el PUNTO DE
+-- INTERACCIÓN registrado (centro de la caja cursor — lo registran las puertas),
+-- el centro de la caja del armario, o la posición del GO (fallback).
+-- Compartido con cursor.script (interactable_box.world_point, Ago 2026). Los
+-- GOs no representan dónde se interactúa (GOTCHA #31): sin esto, el GO de
+-- door_side (27 uds a la izquierda de la hoja) queda DETRÁS del jugador
+-- apoyado en la puerta (dot negativo) y la puerta perdería contra cualquier
+-- candidato alineado con su dirección — p. ej. el armario de encima
+-- (door_side4 ↔ office_cabinet1, Ago 2026). Puntuar contra el punto
+-- registrado deja la puerta DELANTE del jugador cuando se apoya en ella.
+
+-- Des-resalta el objetivo actual (si existe) y lo olvida.
+local function clear_highlight(self)
+	if self.highlight_target then
+		msg.post(self.highlight_target, "mouse_hover", { enter = false })
+		self.highlight_target = nil
+	end
+end
+
+-- Recalcula el interactable objetivo entre los detectados: gana el más
+-- ALINEADO con la dirección de movimiento del jugador (facing-first) — el
+-- jugador interactúa con lo que tiene delante. ¿Por qué no distancia ni z?
+-- (GOTCHA #31): los GOs no representan dónde se interactúa — un armario en
+-- el muro (GO 54 uds por encima del pasillo) pierde SIEMPRE contra las
+-- puertas adyacentes (más cercanas en GO) aunque el jugador esté pegado a él,--   y entre dos puertas simétricas solo gana la más cercana al cruce. Con
+--   facing-first, andar hacia el armario lo selecciona y andar hacia una puerta
+--   la selecciona. Además se puntúa contra el PUNTO DE INTERACCIÓN registrado
+--   (interaction_point): una puerta con el GO desplazado de su caja (door_side
+--   +27 en x) quedaría "detrás" del jugador apoyado en ella (dot negativo) y
+--   perdería contra el armario de encima — con el punto registrado, la puerta
+--   queda delante cuando el jugador se apoya en ella. A igual alineación
+--   desempata la distancia, y a igual
+-- distancia el mayor z. Sin facing (nunca se movió) → el más cercano. Filtros:
+--   · cubiertos por un armario CERRADO (is_covered) — bote tapado: ni resaltar
+--   · armario ABIERTO con contenido (has_candidate_inside) — el bote interior
+--     (activado al terminar la animación) es el objetivo, no el armario; al
+--     recogerlo, el armario vuelve a ser elegible (puede cerrarse).
+--   · gato en PET (excluido, ver abajo).
+-- Solo envía mouse_hover cuando el objetivo cambia (update on change, regla
+-- #5 del plan). En muerte/diálogo no resalta nada.
+-- 🐾 Gato en PET: mientras el gato es mascota y sigue al jugador a
+--    pet_follow_dist, SIEMPRE sería el "más cercano" (interactuar con él
+--    en PET solo maúlla: cat_food_count=0) y bloquearía NPCs/objetos. Se le
+--    excluye de los candidatos mientras npc_spawn_state.is_cat_pet_active()
+--    esté activo (flag gestionado por cat.script).
+local function update_target(self)
+	if self.player_dead or self.dialog_active then
+		clear_highlight(self)
+		return
+	end
+
+	-- URL del gato cacheada de forma LAZY: el gato se registra en
+	-- npc_spawn_state en su init(), que puede ejecutarse DESPUÉS del del
+	-- player (mismo proceso de creación de la colección).
+	local cat_pet_active = npc_spawn_state.is_cat_pet_active()
+	if cat_pet_active and not self.cat_url then
+		self.cat_url = npc_spawn_state.get_npc_url("cat")
+	end
+
+	local player_pos = go.get_position()
+	-- Última dirección de movimiento (aiming la conserva al parar); nil si el
+	-- jugador nunca se movió → en ese caso se elige por distancia.
+	local facing = aiming.state.facing_dir
+
+	-- 1. Candidatos: vivos, sin gato-en-PET y no cubiertos por un armario cerrado.
+	local candidates = {}
+	for _, url in pairs(self.nearby) do
+		if not go.exists(url) then
+			-- El objeto ya no existe (destruido/despawn): limpiar
+			self.nearby[tostring(url)] = nil
+		elseif not (cat_pet_active and url == self.cat_url) then
+			-- is_covered(pos, url): excluye la caja del PROPIO candidato — sin
+			-- esto, un armario cerrado se autoexcluiría (su GO está dentro de su
+			-- propia caja de cobertura) y nunca sería seleccionable en móvil.
+			if not cabinet_state.is_covered(go.get_position(url), url) then
+				table.insert(candidates, url)
+			end
+		end
+	end
+
+	-- 2. Armario ABIERTO con contenido (el bote interior activado): el bote es
+	--    el objetivo — el armario no compite con su propio contenido.
+	for i = #candidates, 1, -1 do
+		if cabinet_state.is_open(candidates[i])
+			and cabinet_state.has_candidate_inside(candidates[i], candidates) then
+			table.remove(candidates, i)
+		end
+	end
+
+	-- 3. Selección FACING-FIRST: dot = alineación con la dirección de
+	--    movimiento (coseno, sin normalizar el facing: escala uniforme → mismo
+	--    orden). A igual dot, distancia; a igual distancia, mayor z.
+	local new_target = nil
+	local best_dot = -math.huge
+	local best_dist = math.huge
+	local best_z = -math.huge
+	for _, url in ipairs(candidates) do
+		-- Puntuar contra el PUNTO DE INTERACCIÓN (centro de la caja cursor), no
+		-- contra el GO (world_point — GOTCHA #31).
+		local obj_pos = interactable_box.world_point(url)
+		local dx = obj_pos.x - player_pos.x
+		local dy = obj_pos.y - player_pos.y
+		local dist = math.sqrt(dx * dx + dy * dy)
+
+		-- 📏 Gate GLOBAL de distancia (interaction_range): fuera de rango ni
+		-- compite ni se resalta (aunque el sensor 180×180 lo haya detectado).
+		-- Misma medida que el cursor de escritorio → comportamiento uniforme.
+		if dist <= INTERACTION_RANGE then
+			local dot = 0
+			if facing and dist > 0.001 then
+				dot = (dx * facing.x + dy * facing.y) / dist
+			end
+			if dot > best_dot then
+				best_dot = dot
+				best_dist = dist
+				best_z = obj_pos.z
+				new_target = url
+			elseif dot == best_dot then
+				if dist < best_dist then
+					best_dist = dist
+					best_z = obj_pos.z
+					new_target = url
+				elseif dist == best_dist and obj_pos.z > best_z then
+					best_z = obj_pos.z
+					new_target = url
+				end
+			end
+		end -- fin gate de rango
+	end
+
+	if new_target ~= self.highlight_target then
+		clear_highlight(self)
+		if new_target then
+			self.highlight_target = new_target
+			msg.post(new_target, "mouse_hover", { enter = true })
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- INIT / UPDATE
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.nearby = {}            -- { [tostring(url)] = url } interactables cercanos
+	self.highlight_target = nil -- objetivo actual resaltado
+	self.player_dead = false
+	self.dialog_active = false
+	self.cat_url = nil          -- URL del gato (cache lazy, ver update_target)
+
+	-- Solo tiene sentido en táctil (el ratón ya usa el cursor): en
+	-- escritorio este sensor no debe resaltar nada ni responder.
+	self.touch_active = platform.is_touch()
+
+	dprint("[mobile_interact] Init. Táctil=" .. tostring(self.touch_active))
+end
+
+function update(self, dt)
+	if not self.touch_active then return end
+	update_target(self)
+end
+
+function final(self)
+	clear_highlight(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- 🔒 Gate de plataforma: en escritorio este sensor es un no-op total
+	-- (no rastrea nearby ni responde a mobile_interact; el ratón usa el
+	-- cursor). Evita bookkeeping inútil en PC.
+	if not self.touch_active then return end
+
+	-- ⚠️ Acoplamiento (desviación del plan, documentada): al ser componente
+	-- del player GO, player.script y player_spray.script TAMBIÉN reciben
+	-- este trigger_response — hoy lo ignoran (no tienen branch). Si en el
+	-- futuro se añade un branch trigger_response a player.script, filtrar
+	-- por other_group == "interactivable" para no romper el sensor.
+
+	-- trigger_response del collision object del sensor.
+	-- GOTCHA #5: en TRIGGERs este mensaje usa other_group (grupo del OTRO).
+	-- La máscara ya restringe a "interactivable"; el check es defensivo.
+	if message_id == hash("trigger_response") then
+		if message.other_group ~= INTERACTABLE_GROUP then return end
+
+		local other_str = tostring(message.other_id)
+		if message.enter then
+			self.nearby[other_str] = message.other_id
+			dprint("[mobile_interact] +cerca: " .. other_str)
+		else
+			self.nearby[other_str] = nil
+			dprint("[mobile_interact] -lejos: " .. other_str)
+		end
+		return
+	end
+
+	-- Botón option (web_controls): interactuar con el objetivo resaltado.
+	-- Un toque = un interact (como la tecla E), no mantenido.
+	if message_id == hash("mobile_interact") then
+		if message.pressed and not self.player_dead and not self.dialog_active
+			and self.highlight_target then
+			msg.post(self.highlight_target, "interact")
+			dprint("[mobile_interact] interact → " .. tostring(self.highlight_target))
+		end
+		return
+	end
+
+	-- Gates de estado (enviados por player.script / dialogue_manager)
+	if message_id == hash("player_died") then
+		self.player_dead = true
+		clear_highlight(self)
+	elseif message_id == hash("player_respawned") then
+		self.player_dead = false
+	elseif message_id == hash("lock_dialog") then
+		self.dialog_active = true
+		clear_highlight(self)
+	elseif message_id == hash("unlock_dialog") then
+		self.dialog_active = false
+	end
+end

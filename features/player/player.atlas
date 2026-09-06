@@ -1,0 +1,378 @@
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_01.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_02.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_03.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_04.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_05.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_06.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_07.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_08.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_09.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_10.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_11.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_12.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_13.png"
+}
+images {
+  image: "/features/player/victory_dance_end_game/victory_dance_end_game_14.png"
+}
+animations {
+  id: "idle"
+  images {
+    image: "/features/player/idle/idle_down_1.png"
+  }
+  images {
+    image: "/features/player/idle/idle_down_2.png"
+  }
+  images {
+    image: "/features/player/idle/idle_down_3.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "left"
+  images {
+    image: "/features/player/left/run_left_1.png"
+  }
+  images {
+    image: "/features/player/left/run_left_2.png"
+  }
+  images {
+    image: "/features/player/left/run_left_3.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "right"
+  images {
+    image: "/features/player/right/run_right_1.png"
+  }
+  images {
+    image: "/features/player/right/run_right_2.png"
+  }
+  images {
+    image: "/features/player/right/run_right_3.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "up"
+  images {
+    image: "/features/player/up/run_up_1.png"
+  }
+  images {
+    image: "/features/player/up/run_up_2.png"
+  }
+  images {
+    image: "/features/player/up/run_up_3.png"
+  }
+  images {
+    image: "/features/player/up/run_up_4.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "down"
+  images {
+    image: "/features/player/down/run_down_1.png"
+  }
+  images {
+    image: "/features/player/down/run_down_2.png"
+  }
+  images {
+    image: "/features/player/down/run_down_3.png"
+  }
+  images {
+    image: "/features/player/down/run_down_4.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "talk"
+  images {
+    image: "/features/player/talk/talk_1.png"
+  }
+  images {
+    image: "/features/player/talk/talk_2.png"
+  }
+  images {
+    image: "/features/player/talk/talk_3.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "damage"
+  images {
+    image: "/features/player/damage/damage_01.png"
+  }
+  images {
+    image: "/features/player/damage/damage_02.png"
+  }
+  images {
+    image: "/features/player/damage/damage_03.png"
+  }
+  images {
+    image: "/features/player/damage/damage_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "death"
+  images {
+    image: "/features/player/death/death_01.png"
+  }
+  images {
+    image: "/features/player/death/death_02.png"
+  }
+  images {
+    image: "/features/player/death/death_03.png"
+  }
+  images {
+    image: "/features/player/death/death_04.png"
+  }
+  images {
+    image: "/features/player/death/death_05.png"
+  }
+  images {
+    image: "/features/player/death/death_06.png"
+  }
+  images {
+    image: "/features/player/death/death_07.png"
+  }
+  images {
+    image: "/features/player/death/death_08.png"
+  }
+  images {
+    image: "/features/player/death/death_09.png"
+  }
+  images {
+    image: "/features/player/death/death_10.png"
+  }
+  images {
+    image: "/features/player/death/death_11.png"
+  }
+  fps: 8
+}
+animations {
+  id: "dead"
+  images {
+    image: "/features/player/death/death_11.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 1
+}
+animations {
+  id: "respawn"
+  images {
+    image: "/features/player/respawn/respawn_01.png"
+  }
+  images {
+    image: "/features/player/respawn/respawn_02.png"
+  }
+  images {
+    image: "/features/player/respawn/respawn_03.png"
+  }
+  fps: 8
+}
+animations {
+  id: "attack_idle_left"
+  images {
+    image: "/features/player/attack_idle_left/attack_idle_l_01.png"
+  }
+  images {
+    image: "/features/player/attack_idle_left/attack_idle_l_02.png"
+  }
+  images {
+    image: "/features/player/attack_idle_left/attack_idle_l_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_idle_right"
+  images {
+    image: "/features/player/attack_idle_right/attack_idle_r_01.png"
+  }
+  images {
+    image: "/features/player/attack_idle_right/attack_idle_r_02.png"
+  }
+  images {
+    image: "/features/player/attack_idle_right/attack_idle_r_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_down_left"
+  images {
+    image: "/features/player/attack_walk_down_left/attack_down_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_left/attack_down_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_left/attack_down_03.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_left/attack_down_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_down_right"
+  images {
+    image: "/features/player/attack_walk_down_right/attack_walk_down_r_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_right/attack_walk_down_r_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_right/attack_walk_down_r_03.png"
+  }
+  images {
+    image: "/features/player/attack_walk_down_right/attack_walk_down_r_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_left"
+  images {
+    image: "/features/player/attack_walk_left/attack_left_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_left/attack_left_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_left/attack_left_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_right"
+  images {
+    image: "/features/player/attack_walk_right/attack_right_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_right/attack_right_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_right/attack_right_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_up_left"
+  images {
+    image: "/features/player/attack_walk_up_left/attack_walk_up_left_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_left/attack_walk_up_left_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_left/attack_walk_up_left_03.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_left/attack_walk_up_left_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack_walk_up_right"
+  images {
+    image: "/features/player/attack_walk_up_right/attack_up_01.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_right/attack_up_02.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_right/attack_up_03.png"
+  }
+  images {
+    image: "/features/player/attack_walk_up_right/attack_up_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "victory_dance_end_game"
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_01.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_02.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_03.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_04.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_05.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_06.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_07.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_08.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_09.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_10.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_11.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_12.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_13.png"
+  }
+  images {
+    image: "/features/player/victory_dance_end_game/victory_dance_end_game_14.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}

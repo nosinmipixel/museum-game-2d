@@ -1,0 +1,127 @@
+script: "/gui/web_controls.gui_script"
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+nodes {
+  scale {
+    x: 3.5
+    y: 3.5
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  id: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+  visible: false
+}
+nodes {
+  position {
+    x: 11.0
+    y: 56.5
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_joystick_left"
+  id: "btn_left"
+  parent: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 63.0
+    y: 56.5
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_joystick_right"
+  id: "btn_right"
+  parent: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 37.0
+    y: 57.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_joystick_center"
+  id: "btn_center"
+  parent: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 37.5
+    y: 83.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_joystick_up"
+  id: "btn_up"
+  parent: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 37.5
+    y: 31.5
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_joystick_down"
+  id: "btn_down"
+  parent: "joystick"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1069.0
+    y: 205.0
+  }
+  scale {
+    x: 4.0
+    y: 4.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_bug"
+  id: "btn_spray"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1202.0
+    y: 205.0
+  }
+  scale {
+    x: 4.0
+    y: 4.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_option"
+  id: "btn_option"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1202.0
+    y: 576.0
+  }
+  scale {
+    x: 3.0
+    y: 3.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_web_pause"
+  id: "btn_pause"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

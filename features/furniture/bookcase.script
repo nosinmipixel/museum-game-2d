@@ -1,0 +1,227 @@
+-- features/furniture/bookcase.script
+-- ═══════════════════════════════════════════════════════
+-- 📚 SCRIPT DE ESTANTERÍA DE LIBROS
+-- ═══════════════════════════════════════════════════════
+--
+--   Controla el hover (tintado del sprite_books + alerta del
+--   título del libro) y el clic (apertura del sistema de lectura
+--   de libros en la GUI).
+--
+--   El book_type se extrae automáticamente del sufijo del nombre
+--   del objeto (bookcase_pal → "pal", bookcase_neo → "neo", etc.),
+--   o se puede sobrescribir con go.property("book_type").
+--
+--   Uso:
+--     1. Colocar este script como componente en bookcase.go
+--     2. Nombrar el objeto en el editor con sufijo: bookcase_pal,
+--        bookcase_neo, bookcase_bronze, bookcase_iberian,
+--        bookcase_roman, bookcase_restor
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("book_type", hash("pal"))
+-- Opcional: animación del sprite_books a mostrar (vacío = auto según book_type)
+-- Valores: bookcase_books_01 … bookcase_books_06
+go.property("book_visual", hash(""))
+
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+local game_state = require "main.game_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_BOOKCASE = false
+local dprint = config.make_log(DEBUG_BOOKCASE)
+
+local TINT_NORMAL = vmath.vector4(1, 1, 1, 1)
+local TINT_HOVER  = vmath.vector4(1.2, 1.2, 1.1, 1.0)  -- Aclara el sprite (coherente con el resto del proyecto: NPC, exhibition, botones usan >1.0)
+
+-- Mapa de hash de book_type a string (para buscar en books_text)
+local BOOK_TYPE_TO_STR = {
+	[hash("pal")]     = "pal",
+	[hash("neo")]     = "neo",
+	[hash("bro")]     = "bro",
+	[hash("bronze")]  = "bro",
+	[hash("ibe")]     = "ibe",
+	[hash("iberian")] = "ibe",
+	[hash("rom")]     = "rom",
+	[hash("roman")]   = "rom",
+	[hash("restor")]  = "restor",
+}
+
+-- Mapa de book_type → animación visual del sprite_books (1:1, 6 tipos → 6 imágenes).
+-- El atlas tiene bookcase_books_01 … bookcase_books_06, todas del mismo tamaño.
+-- Se asigna una imagen distinta por tipo para que cada estantería tenga su aspecto,
+-- sin necesidad de duplicar el .go (el script cambia la animación en init()).
+local BOOK_VISUAL = {
+	["pal"]    = hash("bookcase_books_01"),
+	["neo"]    = hash("bookcase_books_02"),
+	["bro"]    = hash("bookcase_books_03"),
+	["ibe"]    = hash("bookcase_books_04"),
+	["rom"]    = hash("bookcase_books_05"),
+	["restor"] = hash("bookcase_books_06"),
+}
+
+function init(self)
+	self.is_hovered = false
+
+	-- Asegurar tint inicial correcto (por si el editor dejó un valor residual)
+	go.set("#sprite_books", "tint", TINT_NORMAL)
+
+	-- Extraer book_type del nombre del objeto si es posible
+	-- Formato esperado: "bookcase_pal", "bookcase_neo", etc.
+	-- El ID puede venir como "[/bookcase_pal#bookcase]" o "/bookcase_pal"
+	local id_str = tostring(go.get_id())
+	dprint("[Bookcase] ID crudo: " .. id_str)
+	-- Buscar _sufijo antes de # o ] (formato URL: [/bookcase_pal#bookcase])
+	local suffix = id_str:match("_(%w+)[#%]]")
+	if not suffix then
+		-- Fallback: buscar al final (para IDs sin fragmento)
+		suffix = id_str:match("_(%w+)$")
+	end
+	if suffix then
+		self.book_type = hash(suffix)
+		dprint("[Bookcase] Tipo detectado del nombre: " .. suffix)
+	else
+		dprint("[Bookcase] ⚠️ No se detectó sufijo, usando default: " .. tostring(self.book_type))
+	end
+
+	-- Convertir hash a string para búsqueda en books_text
+	self.book_type_str = BOOK_TYPE_TO_STR[self.book_type] or tostring(self.book_type)
+
+	-- Cargar datos de libros para obtener el título en hover
+	self.books_data = text_loader.load("books") or {}
+
+	-- 🌐 Recargar libros si el idioma cambia en caliente (el título del hover
+	--    se envía a text_alert desde show_book_title_alert).
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.books_data = text_loader.reload("books", new_lang) or {}
+		dprint("[Bookcase] Libros recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	-- Establecer el aspecto visual del sprite_books según book_type.
+	-- Cada instancia puede mostrar una imagen diferente aunque compartan el mismo .go.
+	-- Si book_visual está configurado en el editor (distinto de hash("")), se usa ese;
+	-- si no, se auto-selecciona según book_type desde BOOK_VISUAL.
+	local visual_anim = self.book_visual
+	if self.book_visual == hash("") then
+		visual_anim = BOOK_VISUAL[self.book_type_str]
+	end
+	if visual_anim then
+		dprint("[Bookcase] Estableciendo sprite_books: " .. tostring(visual_anim) .. " (book_type=" .. self.book_type_str .. ")")
+		sprite.play_flipbook("#sprite_books", visual_anim)
+	end
+
+	-- Registrar qué librería GUI vamos a controlar
+	self.library_gui_url = msg.url("bootstrap:/gui_library#library")
+
+	-- URL del HUD cacheada (addendum §2: evitar strings hardcodeados
+	-- que se rompan al renombrar colecciones).
+	self.hud_url = msg.url("/gui#hud")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📖 CLIC: ABRIR SISTEMA DE LECTURA
+-- ═══════════════════════════════════════════════════════
+
+-- ⚠️ Definida ANTES de on_message: al ser local, si se definiera
+-- después, on_message resolvería on_interact como global nil
+-- ("attempt to call global 'on_interact' (a nil value)").
+-- Ver docs/DEV_GOTCHAS.md GOTCHA #1 (regla adicional para local).
+local function on_interact(self)
+	-- Reutilizar self.book_type_str, ya calculado en init() desde
+	-- BOOK_TYPE_TO_STR (con fallback a tostring() para tipos desconocidos).
+	-- on_interact solo se llama desde on_message, que corre tras init().
+	local bt = self.book_type_str
+
+	-- Si no se pudo determinar bt, ignorar.
+	-- NOTA: tostring(nil) = "nil" (string), por eso comprobamos también
+	-- la cadena "nil" y "hash: [None]" (representación de hash vacío).
+	if bt == nil or bt == "" or bt == "nil" or bt == "hash: [None]" then
+		return
+	end
+
+	dprint("[Bookcase] Abriendo libro tipo: " .. bt)
+
+	-- Enviar mensaje a la librería GUI para que muestre el libro
+	-- (con guardia nil: la librería puede no estar disponible en todas las escenas)
+	if self.library_gui_url then
+		msg.post(self.library_gui_url, "show_book", {
+			book_type = bt
+		})
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: TINT + ALERTA DEL TÍTULO
+-- ═══════════════════════════════════════════════════════
+
+-- ⚠️ Definidas ANTES de on_message: al ser local, si se definieran
+-- después, on_message resolvería estas funciones como global nil
+-- ("attempt to call global ... (a nil value)").
+-- Ver docs/DEV_GOTCHAS.md GOTCHA #1 (regla adicional para local).
+local function apply_hover_tint(self)
+	go.animate("#sprite_books", "tint", go.PLAYBACK_ONCE_FORWARD, TINT_HOVER, go.EASING_OUTQUAD, 0.15)
+end
+
+local function reset_hover_tint(self)
+	go.animate("#sprite_books", "tint", go.PLAYBACK_ONCE_FORWARD, TINT_NORMAL, go.EASING_OUTQUAD, 0.15)
+end
+
+local function show_book_title_alert(self)
+	-- Buscar el título del libro por book_type_str
+	local title = nil
+	for _, book in ipairs(self.books_data) do
+		if book.book_type == self.book_type_str then
+			title = book.title
+			break
+		end
+	end
+
+	if title then
+		-- replace = true: el título es hover posicional → se muestra AL
+		-- INSTANTE aunque otra alerta esté visible (sin cola). Sin esto, al
+		-- pasar rápido entre estanterías cercanas, el título anterior
+		-- completaba sus 3s y el nuevo quedaba encolado (efecto "retraso").
+		msg.post(self.hud_url, "show_alert", { text = title, replace = true })
+	else
+		dprint("[Bookcase] ⚠️ Título no encontrado para tipo: " .. self.book_type_str)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		if message.enter and not self.is_hovered then
+			self.is_hovered = true
+			apply_hover_tint(self)
+			show_book_title_alert(self)
+		elseif not message.enter and self.is_hovered then
+			self.is_hovered = false
+			reset_hover_tint(self)
+			-- No ocultamos la alerta explícitamente: show_alert tiene
+			-- auto-timeout de 3s en hud.gui_script. Con replace=true, el hover
+			-- de otra estantería sustituye el título al instante.
+		end
+
+	elseif message_id == hash("interact") then
+		-- Solo procesar interact si el cursor está realmente sobre esta bookcase (hover activo)
+		-- Esto evita recibir interact desde otros objetos cercanos o mensajes extraviados
+		if self.is_hovered then
+			on_interact(self)
+		else
+			dprint("[Bookcase] ⚠️ interact ignorado (no está en hover)")
+		end
+	end
+end
+
+
+
+

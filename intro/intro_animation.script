@@ -1,0 +1,224 @@
+-- intro/intro_animation.script
+-- ═══════════════════════════════════════════════════════
+-- 🎥 ANIMACIÓN DE LA INTRODUCCIÓN
+-- ═══════════════════════════════════════════════════════
+--
+--   Timeline de la intro: 0s oculta GUI y arranca player_intro,
+--   3s cambia título ES→EN, 5s oculta player, 6s muestra GUI.
+--   Cámara tipo "cover" (Fase 7c) y retención en portrait
+--   móvil (Fase 6: no arranca hasta landscape).
+--
+--   ℹ️ sprite_player vive en un GO hijo (player_intro) porque
+--   los sprites no exponen position.x/y animable con go.animate.
+--   El scene_manager reenvía key_tab en modo "intro" (skip).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "show_gui"/"hide_gui" (hacia /gui_intro#intro_gui)
+--     → "play_ambient"        (hacia audio_manager)
+--   Mensajes que RECIBE (on_message):
+--     ← "skip_animation" (Tab → salta al estado 6s)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local function hide_gui()
+  msg.post("/gui_intro#intro_gui", "hide_gui")
+end
+
+local function show_gui()
+  msg.post("/gui_intro#intro_gui", "show_gui")
+end
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): finish_animation está definida MÁS ABAJO pero
+-- es llamada desde init() (closure del timer) y on_message(). Forward declaration:
+-- los callers la capturan como upvalue y la definición posterior asigna al local.
+local finish_animation
+
+local platform = require "main.platform"
+local screen_utils = require "main.screen_utils"
+
+-- 📐 Fase 7c (docs/plans/archive/MOBILE_CONTROLS_PLAN.md): cámara dinámica tipo "cover".
+-- El mundo de la intro está diseñado para la referencia 1280×768 (game.project)
+-- y la cámara se configura en runtime con orthographic_zoom = cover para que
+-- el fondo SIEMPRE cubra la pantalla y TODA la composición (fondo, título,
+-- jugador) escale como una unidad en cualquier proporción (móvil, 4K, ultra-wide).
+--   cover = max(vis_w / 1280, vis_h / 768)
+-- donde vis = tamaño de ventana en px CSS (window.get_size() devuelve px
+-- FÍSICOS en HTML5 high_dpi → dividir por DPR, GOTCHA #11).
+--   • PC 1280×768 → cover = 1.0 (sin cambios, la composición exacta del editor)
+--   • Móvil 960×432 CSS → cover = 0.75 (zoom out: se ve todo el ancho del arte)
+--   • Ultra-wide 2560×1080 → cover = 2.0 (zoom in: cubre y recorta el sobrante)
+-- El zoom estático del .collection (1.0) queda como fallback del primer frame;
+-- init() lo sobrescribe inmediatamente vía camera.set_orthographic_zoom()
+-- (ver GOTCHA en fit_to_window: go.set sobre URL de GO no llega a la propiedad
+-- del componente cámara). La GUI de la intro no se ve afectada (se renderiza
+-- aparte, con su propio adjust).
+local REF_W = 1280
+local REF_H = 768
+
+-- Ajusta la cámara al tamaño de ventana actual si cambió. Se llama desde
+-- init() y cada frame desde update() (polling: sin tocar el listener global
+-- de ventana, que es del dialogue_manager — GOTCHA #6). El polling es barato
+-- (una comparación) y robusto ante resize/fullscreen/rotación.
+local function fit_to_window(self)
+	local w, h = window.get_size()
+	if w == self.last_win_w and h == self.last_win_h then return end
+	self.last_win_w, self.last_win_h = w, h
+
+	-- Primer frame HTML5: el tamaño aún puede ser (0,0) → esperar al update().
+	if w <= 0 or h <= 0 then return end
+
+	local vis_w = w / screen_utils.get_display_scale()
+	local vis_h = h / screen_utils.get_display_scale()
+	local cover = math.max(vis_w / REF_W, vis_h / REF_H)
+
+	-- ⚠️ GOTCHA (verificado Ago 2026): las propiedades del componente cámara NO
+	-- se fijan con go.set sobre la URL del GO sin fragmento — error en runtime
+	-- "'/camera' does not have any property called 'orthographic_zoom'". Las
+	-- propiedades de COMPONENTE requieren el fragmento (#camera); precedente en
+	-- el proyecto: go.set("#sprite_books", "tint", ...). Aquí se usa la función
+	-- dedicada del módulo camera (set_orthographic_zoom, presente en 1.13 —
+	-- verificado en el wasm compilado), que evita el sistema de propiedades.
+	-- El modo ortográfico por defecto es FIXED → orthographic_zoom es el zoom
+	-- efectivo (lo que la fórmula cover calcula directamente).
+	camera.set_orthographic_zoom("/camera#camera", cover)
+end
+
+-- 📱 Fase 6 — Detección de portrait vía la ventana real. En HTML5 el overlay de
+-- rotación se muestra con `(orientation: portrait) and (pointer: coarse)`: la
+-- orientación de la ventana (alto > ancho) y el ser táctil son las mismas
+-- condiciones. El desktop nunca espera (is_touch() false → no se retiene).
+local function is_portrait()
+  local w, h = window.get_size()
+  -- Si el tamaño aún no está definido (w==0 en el primer frame HTML5), esperar:
+  -- tratarlo como portrait evita arrancar la intro "a ciegas" detrás del overlay.
+  return w <= 0 or h > w
+end
+
+-- Arranca el timeline completo de la animación (movimiento, títulos, música).
+-- Se llama en init() si ya hay landscape, o desde update() cuando el jugador
+-- rota (caso portrait). La GUI ya está oculta (hide_gui se hizo en init()).
+local function start_animation(self)
+  -- 🧍 Guard: si la animación ya terminó (p. ej. skip_animation llegó mientras
+  -- esperábamos landscape), no re-lanzar la música ni el movimiento. Los timers
+  -- ya están gateados por animation_active, pero los efectos laterales de aquí
+  -- (play_ambient intro_start, go.animate, disable title_en) NO lo estaban.
+  if not self.animation_active then return end
+
+  -- 🎵 Parte 1: música de fondo de la animación cinemática.
+  -- Se reproduce a través del audio_manager (bootstrap) para respetar
+  -- el volumen/mute globales. Al terminar la animación se corta sola:
+  -- finish_animation lanza el fondo de la parte 2 (calm) y el gestor
+  -- detiene el anterior.
+  msg.post("bootstrap:/audio_manager#manager", "play_ambient", {
+    prefix    = "intro_start",
+    index     = 1,
+    sound_url = msg.url("bootstrap:/audio_manager#start_1"),
+  })
+
+  -- title_en inicia oculto
+  msg.post("#title_en", "disable")
+
+  -- Mover el game object hijo (player_intro) horizontalmente al centro (x=640)
+  -- El sprite permanece en la misma coordenada Y (137) durante toda la animación
+  go.animate("player_intro", "position.x", go.PLAYBACK_ONCE_FORWARD, 640, go.EASING_INOUTQUAD, 5)
+
+  -- t=3s: cambiar título de español a inglés
+  timer.delay(3, false, function()
+    if not self.animation_active then return end
+    msg.post("#title_es", "disable")
+    msg.post("#title_en", "enable")
+  end)
+
+  -- t=5s: player_intro llega al centro (x=640) → deshabilitar el game object hijo
+  timer.delay(5, false, function()
+    if not self.animation_active then return end
+    msg.post("player_intro", "disable")
+  end)
+
+  -- t=6s: fin de la animación → ocultar todo y mostrar GUI
+  timer.delay(6, false, function()
+    if not self.animation_active then return end
+    finish_animation(self)
+  end)
+end
+
+function init(self)
+  self.animation_active = true
+
+  -- 📐 Fase 7c: ajustar la cámara al tamaño de ventana (cover) desde el
+  -- primer frame. self.last_win_* se inicializan a 0 para forzar el cálculo.
+  self.last_win_w, self.last_win_h = 0, 0
+  fit_to_window(self)
+
+  -- 🎥 Fijar el modo ortográfico a FIXED: la fórmula cover calcula el zoom
+  -- EFECTIVO, así que el modo debe ser Fixed (si alguien pone Auto Fit/Cover
+  -- en el editor, el zoom automático multiplicaría el nuestro → doble
+  -- aplicación y la intro se vería mal). Línea defensiva; el modo por defecto
+  -- ya es FIXED.
+  camera.set_orthographic_mode("/camera#camera", camera.ORTHO_MODE_FIXED)
+
+  -- Ocultar GUI interactiva (siempre: la intro empieza sin menú)
+  hide_gui()
+
+  -- 📱 Fase 6 — Retención por orientación: si el móvil está en portrait
+  -- (tapado por el overlay de rotación), NO arrancar la animación ni la
+  -- música: update() esperará hasta que el dispositivo esté en horizontal
+  -- para que el jugador vea la intro completa desde el principio.
+  if platform.is_touch() and is_portrait() then
+    self.waiting_landscape = true
+    return
+  end
+  self.waiting_landscape = false
+  start_animation(self)
+end
+
+-- 📱 Fase 6 — Espera activa por orientación: al girar a horizontal, se lanza
+-- el timeline de la animación (una sola vez).
+function update(self, dt)
+  -- 📐 Fase 7c: reajustar la cámara si la ventana cambió (resize, fullscreen,
+  -- rotación del dispositivo). Internamente solo actúa si el tamaño varió.
+  fit_to_window(self)
+
+  if self.waiting_landscape and not is_portrait() then
+    self.waiting_landscape = false
+    start_animation(self)
+  end
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("skip_animation") then
+    if not self.animation_active then return end
+    finish_animation(self)
+  end
+end
+
+function finish_animation(self)
+  self.animation_active = false
+
+  -- Cancelar animaciones del game object hijo
+  go.cancel_animations("player_intro")
+
+  -- Ocultar todos los elementos de la animación
+  msg.post("player_intro",       "disable")
+  msg.post("#sprite_background", "disable")
+  msg.post("#title_es",          "disable")
+  msg.post("#title_en",          "disable")
+  msg.post("#label_credits",     "disable")
+
+  -- 🎵 Parte 2: música de fondo del menú (texto + opciones) en loop.
+  -- El audio_manager corta el fondo de la parte 1 (start) y hace fade-in
+  -- del calm. Sigue sonando hasta que el jugador entra al juego (level_01):
+  -- entonces el scene_manager arranca la playlist global (start_playlist) y la sustituye.
+  msg.post("bootstrap:/audio_manager#manager", "play_ambient", {
+    prefix    = "intro_calm",
+    index     = 1,
+    sound_url = msg.url("bootstrap:/audio_manager#calm_1"),
+    loop      = 1,
+  })
+
+  -- Mostrar la GUI interactiva
+  show_gui()
+end

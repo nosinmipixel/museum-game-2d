@@ -1,0 +1,197 @@
+-- features/props/food_spawn_container.script
+-- ═══════════════════════════════════════════════════════
+-- 🥫 CONTENEDOR DE SPAWN DE LATAS DE COMIDA
+-- ═══════════════════════════════════════════════════════
+--
+--   Gestiona la creación y reposición de food_cat_cans en
+--   sus puntos de spawn hijos (food_spawn_01..03).
+--
+--   Solo 1 lata activa simultáneamente (MAX_ACTIVE = 1).
+--   Cuando el jugador recoge una lata, cat_food_count pasa a 1
+--   y el spawn point queda vacío hasta que la comida se usa.
+--
+--   Al recibir "food_used" (desde el futuro sistema del gato):
+--     - cat_food_count vuelve a 0
+--     - Se repone una lata en un punto de spawn libre
+--
+--   Convención de naming: food_spawn_01, food_spawn_02, ...
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local food_state = require "main.food_spawn_state"
+local config = require "main.config"
+local game_state = require "main.game_state"
+
+-- ⚙️ CONFIGURACIÓN
+local MAX_ACTIVE = 1  -- Solo 1 lata activa a la vez (uso único)
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_FOOD_SPAWN = false
+local dprint = config.make_log(DEBUG_FOOD_SPAWN)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): initialize_spawns y spawn_food_can_at_index
+-- están definidas MÁS ABAJO pero son llamadas desde update()/on_message() o desde
+-- initialize_spawns. Forward declaration: los callers las capturan como upvalues
+-- y las definiciones posteriores 'function X(self)' asignan a estos locales.
+-- (discover_spawn_points y find_free_spawn_index ya están antes que sus callers:
+--  se convierten a 'local function' directo.)
+local initialize_spawns
+local spawn_food_can_at_index
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	food_state.container_url = msg.url()
+
+	self.spawn_points = {}  -- { position=v3, occupied=bool }
+	self.active_count = 0
+	self.is_initialized = false
+end
+
+function update(self, dt)
+	if not self.is_initialized then
+		self.is_initialized = true
+		initialize_spawns(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 DETECCIÓN DINÁMICA DE PUNTOS DE SPAWN
+-- ═══════════════════════════════════════════════════════
+
+local function discover_spawn_points(self)
+	self.spawn_points = {}
+
+	for i = 1, 10 do  -- límite generoso
+		local name = "food_spawn_" .. string.format("%02d", i)
+		if go.exists(name) then
+			local pos = go.get_position(name)
+			table.insert(self.spawn_points, {
+				position = pos,
+				occupied = false
+			})
+			dprint("[food_spawn_container] Encontrado: " .. name)
+		else
+			break
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 INICIALIZACIÓN DE SPAWNS
+-- ═══════════════════════════════════════════════════════
+
+function initialize_spawns(self)
+	discover_spawn_points(self)
+
+	if #self.spawn_points == 0 then
+		print("[food_spawn_container] ⚠️ No se encontraron puntos de spawn (food_spawn_01..NN)")
+		return
+	end
+
+	dprint("[food_spawn_container] Detectados " .. #self.spawn_points .. " puntos de spawn")
+
+	-- Verificar si el jugador ya tiene comida (partida guardada)
+	local has_food = tonumber(game_state.get_global("cat_food_count") or 0) >= 1
+
+	if not has_food then
+		-- Spawnear 1 lata en un punto aleatorio
+		local idx = math.random(1, #self.spawn_points)
+		local ok = spawn_food_can_at_index(self, idx)
+		if ok then
+			self.spawn_points[idx].occupied = true
+			self.active_count = self.active_count + 1
+		end
+	else
+		dprint("[food_spawn_container] Jugador ya tiene comida. No se spawnea lata.")
+	end
+
+	dprint("[food_spawn_container] Activos: " .. self.active_count .. "/" .. MAX_ACTIVE)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 CREAR UNA LATA EN UN ÍNDICE DE SPAWN
+-- ═══════════════════════════════════════════════════════
+
+function spawn_food_can_at_index(self, spawn_idx)
+	local spawn = self.spawn_points[spawn_idx]
+
+	food_state.pending_spawn = {
+		index = spawn_idx,
+		position = spawn.position
+	}
+
+	local ok, err = pcall(factory.create, "#food_can_factory", spawn.position)
+	if ok then
+		dprint("[food_spawn_container] Food_can en spawn #" .. spawn_idx .. " (" ..
+		      string.format("%.0f, %.0f", spawn.position.x, spawn.position.y) .. ")")
+		return true
+	else
+		print("[food_spawn_container] ⚠️ Error al crear food_can en spawn #" .. spawn_idx .. ": " .. tostring(err))
+		food_state.pending_spawn = nil
+		return false
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 BUSCAR PUNTO DE SPAWN LIBRE
+-- ═══════════════════════════════════════════════════════
+
+local function find_free_spawn_index(self)
+	local free_indices = {}
+	for idx, spawn in ipairs(self.spawn_points) do
+		if not spawn.occupied then
+			table.insert(free_indices, idx)
+		end
+	end
+
+	if #free_indices == 0 then
+		return nil
+	end
+
+	return free_indices[math.random(1, #free_indices)]
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("food_picked_up") then
+		-- Una lata ha sido recogida
+		local spawn_idx = message.spawn_index
+
+		if spawn_idx and self.spawn_points[spawn_idx] then
+			self.spawn_points[spawn_idx].occupied = false
+			self.active_count = math.max(0, self.active_count - 1)
+			dprint("[food_spawn_container] Lata recogida (spawn #" .. spawn_idx .. "). Activos: " .. self.active_count)
+
+			-- NO reponer automáticamente — esperar a "food_used"
+			-- El jugador tiene cat_food_count = 1 ahora
+		else
+			print("[food_spawn_container] ⚠️ spawn_index inválido: " .. tostring(spawn_idx))
+		end
+
+	elseif message_id == hash("food_used") then
+		-- El jugador ha usado la comida (alimentado al gato)
+		-- cat_food_count ya debería estar en 0 desde el script del gato
+		game_state.set_global("cat_food_count", 0)
+
+		-- Reponer una lata en un punto libre
+		if self.active_count < MAX_ACTIVE then
+			local free_idx = find_free_spawn_index(self)
+			if free_idx then
+				local ok = spawn_food_can_at_index(self, free_idx)
+				if ok then
+					self.spawn_points[free_idx].occupied = true
+					self.active_count = self.active_count + 1
+					dprint("[food_spawn_container] Lata repuesta en spawn #" .. free_idx .. ". Activos: " .. self.active_count)
+				end
+			else
+				dprint("[food_spawn_container] No hay puntos de spawn libres para reponer")
+			end
+		end
+	end
+end

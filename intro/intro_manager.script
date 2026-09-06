@@ -1,0 +1,81 @@
+-- intro/intro_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🎬 GESTOR DE LA INTRODUCCIÓN
+-- ═══════════════════════════════════════════════════════
+--
+--   Orquestador de la pantalla de inicio: carga partida,
+--   selección de idioma, continuar/nueva partida y lanza
+--   level_01. Gestiona el input real (focus desde bootstrap).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "goto_level_01"   (hacia scene_manager)
+--     → "set_language"/"set_has_save"/"refresh_texts" (intro GUI)
+--   Mensajes que RECIBE (on_message):
+--     ← "start_game"/"set_language"/"reset_game" (desde intro GUI)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_INTRO_MANAGER = false
+local dprint = config.make_log(DEBUG_INTRO_MANAGER)
+
+function init(self)
+  -- Cargar estado guardado
+  game_state.load()
+
+  -- 🎛️ Re-aplicar el volumen de efectos guardado (grupo "sfx"): los
+  -- componentes .sound de la intro (p. ej. el clic de botón, grupo sfx) se
+  -- crean al cargar esta colección, pero el gain del grupo solo se aplica en
+  -- audio_manager al arrancar (bootstrap, donde el grupo aún no existe) y al
+  -- cargar level_01. Sin esto, durante la intro el clic ignoraría el slider
+  -- de efectos de una sesión anterior (mismo patrón que audio_manager.init).
+  msg.post("bootstrap:/audio_manager#manager", "set_sfx_volume", {
+    volume = game_state.get_global("sfx_volume") or 1.0
+  })
+
+  -- Obtener idioma actual
+  self.language = game_state.get_global("language") or "es"
+
+  -- Verificar si existe archivo de guardado real (no fresh start)
+  -- game_state._has_save_data se setea en load() según si persistence
+  -- encontró un archivo en disco o creó datos por defecto
+  local has_save = game_state._has_save_data or false
+
+  -- Notificar a la GUI
+  msg.post("/gui_intro#intro_gui", "set_language", { lang = self.language })
+  msg.post("/gui_intro#intro_gui", "set_has_save",  { has_save = has_save })
+
+  dprint("[Intro Manager] Inicializado. Idioma: " .. self.language .. " | Tiene partida: " .. tostring(has_save))
+end
+
+function on_message(self, message_id, message, sender)
+  if message_id == hash("set_language") then
+    self.language = message.lang
+    game_state.set_global("language", self.language)
+    game_state.save()
+    game_state.flush()
+    text_loader.reload("main", self.language)
+    text_loader.reload("exhibition", self.language)
+    text_loader.reload("general", self.language)
+    msg.post("/gui_intro#intro_gui", "refresh_texts")
+    dprint("[Intro Manager] Idioma cambiado a: " .. self.language)
+
+  elseif message_id == hash("start_game") then
+    msg.post("bootstrap:/main_loader#scene_manager", "goto_level_01")
+    dprint("[Intro Manager] Iniciando juego → level_01")
+
+  elseif message_id == hash("reset_game") then
+    game_state.reset_all()
+    dprint("[Intro Manager] Partida reiniciada")
+    msg.post("/gui_intro#intro_gui", "set_has_save", { has_save = false })
+  end
+end

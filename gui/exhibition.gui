@@ -1,0 +1,88 @@
+script: "/gui/exhibition.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+textures {
+  name: "balloons"
+  texture: "/features/props/balloons.atlas"
+}
+textures {
+  name: "exhibition_images"
+  texture: "/assets/textures/exhibition_images.atlas"
+}
+nodes {
+  size {
+    x: 300.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  id: "box_exhibition_container"
+  pivot: PIVOT_S
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+  visible: false
+}
+nodes {
+  size {
+    x: 300.0
+    y: 100.0
+  }
+  type: TYPE_BOX
+  texture: "balloons/speech_bubble_b"
+  id: "box_exhibition"
+  pivot: PIVOT_S
+  parent: "box_exhibition_container"
+  inherit_alpha: true
+  slice9 {
+    x: 20.0
+    y: 20.0
+    z: 20.0
+    w: 20.0
+  }
+}
+nodes {
+  position {
+    y: -4.0
+  }
+  type: TYPE_BOX
+  texture: "balloons/speech_bubble_arrow_b"
+  id: "box_exhibition_arrow"
+  parent: "box_exhibition_container"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 1400.0
+    y: 30.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_exhibition"
+  pivot: PIVOT_N
+  line_break: true
+  parent: "box_exhibition_container"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1083.0
+    y: 509.0
+  }
+  size {
+    x: 256.0
+    y: 256.0
+  }
+  type: TYPE_BOX
+  texture: "exhibition_images/132_lucernas_empuries"
+  id: "box_image"
+  inherit_alpha: true
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,70 @@
+images {
+  image: "/features/props/particle.png"
+}
+images {
+  image: "/assets/textures/props/health_kit.png"
+}
+images {
+  image: "/assets/textures/props/spray_can.png"
+}
+images {
+  image: "/assets/textures/props/cat_food_can.png"
+}
+images {
+  image: "/assets/textures/props/vending_machine.png"
+}
+images {
+  image: "/assets/textures/props/food_cat_can.png"
+}
+images {
+  image: "/assets/textures/props/pickup_poison_nest.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_01.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_02.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_03.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_04.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_05.png"
+}
+images {
+  image: "/assets/textures/props/nest_enemies_06.png"
+}
+animations {
+  id: "nest_destruction"
+  images {
+    image: "/assets/textures/props/nest_enemies_01.png"
+  }
+  images {
+    image: "/assets/textures/props/nest_enemies_02.png"
+  }
+  images {
+    image: "/assets/textures/props/nest_enemies_03.png"
+  }
+  images {
+    image: "/assets/textures/props/nest_enemies_04.png"
+  }
+  images {
+    image: "/assets/textures/props/nest_enemies_05.png"
+  }
+  images {
+    image: "/assets/textures/props/nest_enemies_06.png"
+  }
+  fps: 5
+}
+animations {
+  id: "nest_idle"
+  images {
+    image: "/assets/textures/props/nest_enemies_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+extrude_borders: 2

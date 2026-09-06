@@ -1,0 +1,362 @@
+-- features/props/doors.script
+-- ═══════════════════════════════════════════════════════
+-- 🚪 PUERTA INTERACTIVA (unificada)
+-- ═══════════════════════════════════════════════════════
+--
+--   Script unificado para cualquier tipo de puerta.
+--   El prefijo de animación se auto-detecta del id del
+--   componente en el .go ("door_front", "door_side",
+--   "door_service"). No requiere propiedad `door_type`.
+--
+--   ⚠️  Todas las funciones auxiliares son `local` para evitar
+--       colisiones con otras funciones del mismo nombre en
+--       otros scripts (ej: slot_furniture.script también define
+--       on_mouse_hover). En Defold todos los scripts comparten
+--       el mismo estado Lua.
+--
+--   Estados:
+--     closed_door (is_open = false) → cerrada, collision player activo
+--     open_door   (is_open = true)  → abierta:
+--         use_open_collision=false (door_front/service) → collision player desactivado
+--         use_open_collision=true  (door_side)          → collision DESPLAZADA al panel
+--            abierto (evita el gap visual: el jugador no puede solaparse con el panel)
+--
+--   Interacción (requiere jugador a ≤ interact_distance):
+--     mouse_hover → aclara el sprite
+--     interact    → toggle abrir/cerrar con animación + sonido
+--
+--   Propiedades:
+--     interact_distance → distancia máxima para interactuar (defecto: 200)
+--
+--   El prefijo de animación se detecta automáticamente
+--   del id del componente script en cada .go.
+--
+--   Componentes esperados en el .go:
+--     sprite_front + sprite_back → puertas divididas (door_front/door_service):
+--         sprite_front (z=0.2) → mitad superior (delante del jugador)
+--         sprite_back  (z=0.0) → mitad inferior (detrás del jugador)
+--     sprite (simple)           → puerta sin dividir (door_side)
+--     collisionobject_cursor → grupo "interactivable", máscara "cursor"
+--     collisionobject_player → grupo "walls", máscara "player"
+--     collisionobject_player_open (SOLO door_side, use_open_collision=true) → colisión
+--         desplazada a la zona del panel abierto (sin gap visual con sprite simple)
+--     collisionobject_npcs → grupo "walls", máscaras "npcs" + "enemies" (Ago 2026):
+--         bloquea NPCs, gato y ENEMIGOS. Se desactiva al ABRIR y reactiva al CERRAR
+--         (antes quedaba siempre activa → NPCs/gato/enemigos se atascaban en el hueco
+--         de puertas abiertas). Reutiliza un collider existente (sin tocar el pool
+--         fijo de collision objects, GOTCHA #27).
+--     door_open             → componente sound (door_open.ogg)
+--     door_closed           → componente sound (door_closed.ogg)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("interact_distance", 200)
+go.property("climate_control", false)  -- true → esta puerta afecta temperatura/humedad
+go.property("use_open_collision", false)  -- true → al abrir, la colisión se DESPLAZA al panel abierto (door_side)
+
+local config = require "main.config"
+local component_utils = require "main.component_utils"
+local interactable_box = require "main.interactable_box"
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_DOORS = false
+local dprint = config.make_log(DEBUG_DOORS)
+
+-- 🚨 TINTADO CLIMÁTICO (Ago 2026): las puertas con climate_control=true
+--    muestran un ROJO PERSISTENTE mientras están ABIERTAS (la señal visual
+--    de "puerta problemática" que se ve a distancia, aunque no haya hover;
+--    con varias puertas abiertas el jugador identifica cuáles son). Al
+--    cerrarla, el tint vuelve a normal (feedback de resolución).
+--    Sobre ese rojo base, el hover lo INTENSIFICA (no lo sustituye): la
+--    señal persistente no se pierde al interactuar.
+--    El resto de puertas mantienen el aclarado normal en hover.
+--    Mismo patrón de color que slot_furniture.script (TINT_WRONG) y que el
+--    rojo de warning climático del HUD (climate_warning_level=2).
+local TINT_NORMAL           = vmath.vector4(1, 1, 1, 1)
+local TINT_CLIMATE_OPEN     = vmath.vector4(1.5, 0.6, 0.6, 1)  -- rojo suave PERSISTENTE (abierta)
+local TINT_HOVER_LIGHTEN    = vmath.vector4(1.3, 1.3, 1.3, 1)  -- aclarado normal (hover, puerta normal)
+local TINT_HOVER_CLIMATE    = vmath.vector4(1.7, 0.5, 0.5, 1)  -- rojo INTENSIFICADO (hover, climática abierta)
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: ACLARAR SPRITE (relativo al tint base persistente)
+-- ═══════════════════════════════════════════════════════
+
+-- Tint BASE según el estado (sin hover): abierta climática → rojo persistente,
+-- resto → normal. Lo usan open/close_door y la salida del hover (una sola
+-- fuente de verdad para no duplicar la condición en tres sitios).
+local function get_base_tint(self)
+	if self.climate_control and self.is_open then
+		return TINT_CLIMATE_OPEN
+	end
+	return TINT_NORMAL
+end
+
+local function on_mouse_hover(self, entering)
+	for _, spr in ipairs(self.sprites) do
+		local target
+		if entering and self.player_in_range then
+			-- 🚨 Puerta climática ABIERTA: intensificar el rojo persistente
+			--    (señal que no se pierde al interactuar).
+			-- Puerta normal (o climática cerrada): aclarado normal.
+			if self.climate_control and self.is_open then
+				target = TINT_HOVER_CLIMATE
+			else
+				target = TINT_HOVER_LIGHTEN
+			end
+		else
+			-- Al salir del hover, restaurar el tint BASE según el estado
+			-- (abierta climática → rojo persistente · resto → normal).
+			target = get_base_tint(self)
+		end
+		go.animate(spr.url, "tint", go.PLAYBACK_ONCE_FORWARD, target, go.EASING_OUTQUAD, 0.15)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 AUTO-DETECCIÓN DEL TIPO DE PUERTA
+-- ═══════════════════════════════════════════════════════
+--
+--   El prefijo se extrae automáticamente del id del
+--   componente en la URL del script. Así cada .go define
+--   su tipo con solo nombrar el componente:
+--     "door_front"  → prefijo "door_front"
+--     "door_side"   → prefijo "door_side"
+--     "door_service"→ prefijo "door_service"
+--
+--   No requiere propiedad `door_type` manual.
+-- ═══════════════════════════════════════════════════════
+
+-- 🎯 Punto de interacción (centro del collisionobject_cursor) por tipo de
+--    puerta, para el picking del sensor móvil (GOTCHA #31). ⚠️ Debe COINCIDIR
+--    con la caja de interacción del .go correspondiente — actualizar ambos si
+--    se mueve la caja en el editor (mismo patrón de sincronía que
+--    cabinet_state/office_cabinet.script).
+local INTERACT_OFFSET = {
+	door_side    = vmath.vector3(27, 0, 0),     -- BOX 30×60 en x+27
+	door_front   = vmath.vector3(0, -10, 0),    -- BOX 60×50 en y−10
+	door_service = vmath.vector3(0, -5, 0),     -- BOX 60×100 en y−5
+}
+
+local function detect_door_prefix()
+	-- tostring(go.get_id()) produce algo como "[/furniture/door_front]"
+	-- o "[/door_front1]". Extraemos el contenido entre corchetes,
+	-- el último segmento tras '/', y eliminamos el sufijo numérico
+	-- para que las copias (door_front1, door_side1) usen las mismas
+	-- animaciones que el original (door_front, door_side, etc.).
+	local id_str = tostring(go.get_id())
+	local clean = id_str:match("%s*%[%s*(.-)%s*%]") or id_str
+	local prefix = clean:match("([^/]+)$") or "door_front"
+	-- Eliminar sufijo numérico: door_front1 → door_front, door_side1 → door_side
+	prefix = prefix:gsub("%d+$", "")
+	return prefix
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚪 ABRIR / CERRAR
+-- ═══════════════════════════════════════════════════════
+
+local function open_door(self)
+	self.is_open = true
+
+	-- Animación: abrir (forward 01→04) en todos los sprites de la puerta
+	for _, spr in ipairs(self.sprites) do
+		sprite.play_flipbook(spr.url, spr.open, go.PLAYBACK_ONCE_FORWARD)
+	end
+
+	-- 🚨 Persistencia climática: al abrir una puerta climática, tint rojo
+	--    suave permanente (señal de "puerta problemática") hasta que se cierre.
+	if self.climate_control then
+		local base = get_base_tint(self)  -- is_open ya es true aquí → TINT_CLIMATE_OPEN
+		for _, spr in ipairs(self.sprites) do
+			go.animate(spr.url, "tint", go.PLAYBACK_ONCE_FORWARD, base, go.EASING_OUTQUAD, 0.3)
+		end
+	end
+
+	-- Sonido: abrir
+	sound.play("#door_open")
+
+	-- 🚪 Colisión del jugador: en vez de deshabilitarla del todo (gap visual en
+	--    door_side, sprite simple → el jugador se solapa con el panel abierto),
+	--    se DESPLAZA a la zona donde queda el panel abierto
+	--    (collisionobject_player_open). Las puertas divididas (door_front/service,
+	--    use_open_collision=false) siguen deshabilitándola por completo.
+	if self.use_open_collision then
+		msg.post(self.collision_player_url, "disable")
+		msg.post(self.collision_player_open_url, "enable")
+	else
+		msg.post(self.collision_player_url, "disable")
+	end
+
+	-- 🚪 Colisión de NPCs/gato/enemigos: al ABRIR se desactiva → el hueco queda
+	--    transitable para todos (los perseguidores pueden cruzar la puerta
+	--    abierta). Antes quedaba siempre activa y NPCs/gato se atascaban en el
+	--    hueco abierto (hallazgo del análisis de colisiones); con los enemigos
+	--    en la máscara (Ago 2026) habría sido peor — por eso el toggle es
+	--    parte del paquete.
+	msg.post(self.collision_npcs_url, "disable")
+
+	-- Notificar al controlador climático si esta puerta afecta el clima
+	if self.climate_control then
+		msg.post("/climate_controller", "climate_door_opened", { door_id = go.get_id() })
+	end
+
+	dprint("[Puerta " .. self.door_prefix .. "] Abierta")
+end
+
+local function close_door(self)
+	self.is_open = false
+
+	-- Animación: cerrar (backward 04→01) en todos los sprites de la puerta
+	for _, spr in ipairs(self.sprites) do
+		sprite.play_flipbook(spr.url, spr.close, go.PLAYBACK_ONCE_BACKWARD)
+	end
+
+	-- 🚨 Persistencia climática: al cerrar, restaurar el tint base (normal)
+	--    (feedback de resolución: el rojo desaparece al solucionar el problema).
+	if self.climate_control then
+		local base = get_base_tint(self)  -- is_open ya es false aquí → TINT_NORMAL
+		for _, spr in ipairs(self.sprites) do
+			go.animate(spr.url, "tint", go.PLAYBACK_ONCE_FORWARD, base, go.EASING_OUTQUAD, 0.3)
+		end
+	end
+
+	-- Sonido: cerrar
+	sound.play("#door_closed")
+
+	-- Bloquear paso al jugador: restaurar la colisión de la puerta cerrada y
+	--    retirar la del panel abierto si se había desplazado.
+	if self.use_open_collision then
+		msg.post(self.collision_player_open_url, "disable")
+	end
+	msg.post(self.collision_player_url, "enable")
+
+	-- 🚪 Colisión de NPCs/gato/enemigos: al CERRAR se reactiva → la puerta
+	--    cerrada vuelve a bloquear a todos por igual.
+	msg.post(self.collision_npcs_url, "enable")
+
+	-- Notificar al controlador climático si esta puerta afecta el clima
+	if self.climate_control then
+		msg.post("/climate_controller", "climate_door_closed", { door_id = go.get_id() })
+	end
+
+	dprint("[Puerta " .. self.door_prefix .. "] Cerrada")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INTERACCIÓN (CLIC)
+-- ═══════════════════════════════════════════════════════
+
+local function on_interact(self)
+	-- Solo interactuar si el jugador está en rango
+	if not self.player_in_range then
+		dprint("[Puerta " .. self.door_prefix .. "] Jugador fuera de rango (" .. tostring(self.interact_distance) .. " uds)")
+		return
+	end
+
+	if self.is_open then
+		close_door(self)
+	else
+		open_door(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DEL SCRIPT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.is_open = false
+	self.player_in_range = false
+
+	-- Detectar tipo de puerta desde el id del componente
+	self.door_prefix = detect_door_prefix()
+
+	-- 🎯 Registrar el PUNTO de interacción (centro del collisionobject_cursor)
+	--    para el sensor móvil: puntúa contra la zona REAL de la puerta y no
+	--    contra el GO. Sin esto, el GO de door_side (27 uds a la izquierda de
+	--    la hoja) queda DETRÁS del jugador cuando este se apoya en la puerta y
+	--    facing-first elegiría cualquier candidato alineado con su dirección
+	--    (p. ej. el armario de encima — GOTCHA #31, Ago 2026).
+	local offset = INTERACT_OFFSET[self.door_prefix]
+	if offset then
+		local p = go.get_position()
+		interactable_box.register(go.get_id(), vmath.vector3(p.x + offset.x, p.y + offset.y, 0))
+	end
+
+	-- Sprites de la puerta: las divididas (door_front/door_service) usan
+	-- sprite_front + sprite_back a distinto Z; door_side usa un sprite simple.
+	self.sprites = {}
+
+	local front_url = msg.url(nil, go.get_id(), hash("sprite_front"))
+	if component_utils.component_exists(front_url, "tint") then
+		table.insert(self.sprites, { url = front_url,
+			open  = hash(self.door_prefix .. "_front_open"),
+			close = hash(self.door_prefix .. "_front_close") })
+	end
+
+	local back_url = msg.url(nil, go.get_id(), hash("sprite_back"))
+	if component_utils.component_exists(back_url, "tint") then
+		table.insert(self.sprites, { url = back_url,
+			open  = hash(self.door_prefix .. "_back_open"),
+			close = hash(self.door_prefix .. "_back_close") })
+	end
+
+	-- Fallback: puerta simple (door_side)
+	if #self.sprites == 0 then
+		table.insert(self.sprites, { url = msg.url(nil, go.get_id(), hash("sprite")),
+			open  = hash(self.door_prefix .. "_open"),
+			close = hash(self.door_prefix .. "_close") })
+	end
+
+	-- URLs de componentes
+	self.player_url = msg.url("/player")
+	self.collision_player_url = msg.url(nil, go.get_id(), hash("collisionobject_player"))
+	-- 🚪 Colisión de NPCs/gato/ENEMIGOS (Ago 2026): grupo "walls", máscaras
+	--    "npcs" + "enemies". open_door() la desactiva (los perseguidores pueden
+	--    cruzar el hueco abierto) y close_door() la reactiva (la puerta cerrada
+	--    bloquea a todos por igual). Antes nunca se tocaba en runtime.
+	self.collision_npcs_url = msg.url(nil, go.get_id(), hash("collisionobject_npcs"))
+
+	-- 🚪 Colisión "abierta" (solo door_side): caja situada donde queda el panel
+	--    visible al abrir. Arranca deshabilitada; open_door() la activa al abrir
+	--    (desplazando la colisión) y close_door() la retira al cerrar.
+	if self.use_open_collision then
+		self.collision_player_open_url = msg.url(nil, go.get_id(), hash("collisionobject_player_open"))
+		msg.post(self.collision_player_open_url, "disable")
+	end
+
+	-- Cuadrado del rango de interacción: comparación en update() sin alocar (§1)
+	self.range_sqr = self.interact_distance * self.interact_distance
+
+	-- 🧭 Z-ordering: ocultación por profundidad resuelta con sprites divididos:
+	-- sprite_back en z=0.0 (detrás de entidades en z=0.1) y sprite_front en
+	-- z=0.2 (delante). Ya no hay ajuste dinámico de Z en update().
+
+	-- ⚠️ Sin acquire_input_focus: cursor.script detecta colisiones
+	-- y envía "interact" y "mouse_hover" según corresponda.
+end
+
+function update(self, dt)
+	if go.exists(self.player_url) then
+		local player_pos = go.get_position(self.player_url)
+		local door_pos = go.get_position()
+		-- Distancia al cuadrado por componentes (sin alocar — §1), equivalente
+		-- a `length <= interact_distance` (ambos lados no negativos).
+		local dx = player_pos.x - door_pos.x
+		local dy = player_pos.y - door_pos.y
+		self.player_in_range = (dx * dx + dy * dy) <= self.range_sqr
+	else
+		self.player_in_range = false
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		on_mouse_hover(self, message.enter)
+
+	elseif message_id == hash("interact") then
+		on_interact(self)
+	end
+end

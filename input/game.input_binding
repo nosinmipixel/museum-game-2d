@@ -1,0 +1,91 @@
+key_trigger {
+  input: KEY_DOWN
+  action: "down"
+}
+key_trigger {
+  input: KEY_UP
+  action: "up"
+}
+key_trigger {
+  input: KEY_LEFT
+  action: "left"
+}
+key_trigger {
+  input: KEY_RIGHT
+  action: "right"
+}
+key_trigger {
+  input: KEY_W
+  action: "up"
+}
+key_trigger {
+  input: KEY_S
+  action: "down"
+}
+key_trigger {
+  input: KEY_A
+  action: "left"
+}
+key_trigger {
+  input: KEY_D
+  action: "right"
+}
+key_trigger {
+  input: KEY_SPACE
+  action: "key_space"
+}
+key_trigger {
+  input: KEY_R
+  action: "key_r"
+}
+# 🔧 DEV (atajo de victoria completa): key_n + config.DEV_MODE →
+#    game_state.debug_force_victory() (lo gestiona main/scene_manager.script).
+#    Defold solo expone códigos SDL/ASCII: la Ñ no tiene constante propia en
+#    el motor → se usa la tecla física N.
+key_trigger {
+  input: KEY_N
+  action: "debug_victory"
+}
+key_trigger {
+  input: KEY_P
+  action: "key_p"
+}
+key_trigger {
+  input: KEY_ESC
+  action: "key_esc"
+}
+key_trigger {
+  input: KEY_TAB
+  action: "key_tab"
+}
+mouse_trigger {
+  input: MOUSE_BUTTON_1
+  action: "touch"
+}
+mouse_trigger {
+  input: MOUSE_BUTTON_LEFT
+  action: "click"
+}
+mouse_trigger {
+  input: MOUSE_BUTTON_RIGHT
+  action: "click_right"
+}
+# 📱 Multi-touch (controles táctiles móvil/HTML5, ver MOBILE_CONTROLS_PLAN.md)
+# ⚠️ Regla crítica (manual oficial Defold "Mouse and touch input"):
+#    el action del multi-touch NO puede ser el mismo que el de MOUSE_BUTTON_1/LEFT
+#    (pisaría el single-touch). Por eso se usa el nombre único "touch_multi".
+#    Los touch points llegan a on_input como action.touch (tabla 1..N) con
+#    id/x/y/screen_x/screen_y/pressed/released.
+touch_trigger {
+  input: TOUCH_MULTI
+  action: "touch_multi"
+}
+# 🖥️ Overlay de FPS (debug temporal): toggle con la tecla F (lo gestiona
+#    gui/hud.gui_script). Para que el overlay no aparezca nunca:
+#    FPS_START_VISIBLE = false en gui/hud.gui_script.
+#    ⚠️ Letra a propósito: las teclas F* (F3, F5, F11, F12…) las intercepta el
+#    navegador en HTML5 y nunca llegan al juego.
+key_trigger {
+  input: KEY_F
+  action: "key_f"
+}

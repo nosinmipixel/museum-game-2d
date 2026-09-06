@@ -1,0 +1,66 @@
+name: Build & Deploy HTML5 a GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # SHA1 del motor Defold del proyecto (build_input_data.json). Actualizar al cambiar de editor.
+  DEFOLD_SHA: f735c12192bf95684e6ae1ae27c400b8170fc6d8
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup OpenJDK 25 (requisito de bob)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Descargar bob.jar (URL verificada, fijada al sha1 del proyecto)
+        run: curl -fsSL -o bob.jar "https://d.defold.com/archive/${{ env.DEFOLD_SHA }}/bob/bob.jar"
+
+      - name: Compilar HTML5 (js-web + archive)
+        run: java -jar bob.jar --platform js-web --archive resolve build bundle
+
+      - name: Aplanar __htmlLaunchDir para que index.html quede en la raiz
+        run: |
+          mkdir -p public
+          # El build genera build/<config>/__htmlLaunchDir/<Titulo>/ con index.html
+          # dentro (carpeta nombrada por el titulo, con espacios). Localizamos
+          # __htmlLaunchDir de forma agnostica a la configuracion y al titulo
+          # (salida real verificada: build/default_html5/__htmlLaunchDir/).
+          launch_dir="$(find build -type d -name __htmlLaunchDir | head -n1)"
+          title_dir="$(find "$launch_dir" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          cp -r "$title_dir/." public/
+          ls -la public/
+
+      - name: Subir artefacto Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Desplegar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

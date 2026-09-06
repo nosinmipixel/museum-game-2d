@@ -1,0 +1,941 @@
+-- main/inventory_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🧠 CEREBRO DEL SISTEMA DE INVENTARIO
+-- ═══════════════════════════════════════════════════════
+--
+--   Este script es el ÚNICO punto de entrada para toda la
+--   lógica de coleccionables. Los objetos y muebles solo
+--   envían eventos aquí y esperan instrucciones.
+--
+--   Flujo de mensajes:
+--     btn_collectible    → "collectible_clicked"
+--     furniture          → "furniture_clicked"
+--     inventory_core     → update(dt) para timers
+--     HUD                → "update_hud_state", "show_alert"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local inventory_core = require "main.inventory_core"
+local collectibles_data = require "main.collectibles_data"
+local game_state = require "main.game_state"
+local screen_utils = require "main.screen_utils"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+local npc_spawn_state = require "main.npc_spawn_state" -- 🛠️ URL de la restauradora (icono de disponibilidad)
+
+-- 🔧 DEBUG [INVENTARIO]: cambiar a true para activar los logs del gestor de inventario.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_INVENTORY = false
+local dprint = config.make_log(DEBUG_INVENTORY)
+
+-- 🏺 Nombre corto LOCALIZADO del objeto (general_text → inventory.item_names,
+--    clave = id string canónico de collectibles_data.items). El name de
+--    collectibles_data (español) queda como fallback. Definida aquí (antes de
+--    spawn_next_item/handle_complete) para que la capturen como upvalue
+--    (GOTCHA #1).
+local function get_item_name(self, item_data)
+	local names = (self.texts.inventory and self.texts.inventory.item_names) or {}
+	return names[item_data.id] or item_data.name
+end
+
+-- 🔍 CHECK DE CONSISTENCIA DE LOCALIZACIÓN (solo dev, GOTCHA #20/37/38):
+--    el fallback de collectibles_data (name/display_name en español) ENMASCARA
+--    los objetos/periodos nuevos sin traducir — en inglés se vería el nombre
+--    español sin ningún error. En dev (config.DEBUG) se verifica que todo id
+--    de collectibles_data.items tenga su entrada en general_text →
+--    inventory.item_names (ES y EN) y todo periodo en inventory.periods. Los
+--    fallbacks se MANTIENEN como red de seguridad ante fallo del catálogo
+--    (decisión confirmada Ago 2026); este check solo hace que el olvido sea
+--    visible en desarrollo.
+local function check_localization_coverage()
+	if not config.DEBUG then return end
+
+	local function check(catalog, labels, what)
+		for key in pairs(catalog) do
+			if not labels[key] then
+				print("[Localization] ⚠️ FALTA TRADUCCIÓN de " .. what .. " '" .. tostring(key) .. "' en general_text (ES o EN) — se mostrará el fallback en español")
+			end
+		end
+	end
+
+	-- ES y EN: las claves de item_names/periods deben cubrir TODAS las del código
+	for _, lang in ipairs({ "es", "en" }) do
+		local general = text_loader.load("general", lang) or {}
+		local inventory = general.inventory or {}
+		check(collectibles_data.items, inventory.item_names or {}, "objeto")
+		check(collectibles_data.periods, inventory.periods or {}, "periodo")
+	end
+end
+
+-- Slot tracking: cada slot independiente (slot_shelf / slot_showcase)
+-- almacena 0 o 1 objeto. Tabla plana: { [slot_url] = item_id }
+
+-- ═══════════════════════════════════════════════════════
+-- ⏱️ TIMER INICIAL (configurable)
+-- ═══════════════════════════════════════════════════════
+--   Tiempo de espera antes de que aparezca el primer objeto
+--   coleccionable. Da tiempo al jugador a explorar el museo.
+--   Se aplica SOLO al inicio del juego (no entre objetos).
+-- ═══════════════════════════════════════════════════════
+-- Valor centralizado en main/config.lua → M.balance.initial_spawn_delay
+-- (punto único preprod/prod; el fallback 5 conserva el comportamiento previo).
+local INITIAL_SPAWN_DELAY = config.balance.initial_spawn_delay or 5  -- segundos
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): estas funciones están definidas MÁS ABAJO en
+-- el archivo pero son llamadas desde init/update/on_message y desde locales
+-- (handle_deposit/handle_complete → save_inventory_state,
+-- find_furniture_slot_for_item). Forward declaration: los callers las capturan
+-- como upvalues y las definiciones posteriores 'function X(self)' asignan a
+-- estos locales.
+local spawn_next_item
+local on_collectible_clicked
+local on_timer_expired
+local on_spawn_timer_expired
+local on_furniture_clicked
+local on_restoration_completed
+local find_furniture_slot_for_item
+local save_inventory_state
+local on_reset_inventory
+local refresh_restorer_icon
+local restore_furniture_slots
+local resume_storage_timer
+local show_completed_exhibition_info
+
+-- ═══════════════════════════════════════════════════════
+-- 🏗️ INICIALIZACIÓN
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	-- Cargar persistencia
+	game_state.load()
+	local persistence_data = {
+		items_status = game_state.get_global("inventory_items_status") or {}
+	}
+
+	-- Inicializar core
+	self.core = inventory_core.init(persistence_data)
+
+	-- Cargar textos generales (alertas, errores, etc.)
+	self.texts = text_loader.load("general")
+
+	-- 🔍 Dev: verificar que objetos/periodos nuevos están traducidos en ES y EN
+	check_localization_coverage()
+
+	-- Recargar textos si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.texts = text_loader.reload("general", new_lang)
+		dprint("[Inventory Manager] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	-- 📌 Referencias a los objetos coleccionables (posicionados manualmente en el editor)
+	self.collectible_url = msg.url("/collectible_object")
+	self.btn_url = msg.url("/btn_collectible")
+
+	-- 🔗 URLs cacheadas (regla #4: resolver en init(), no hardcodear en handlers)
+	self.hud_url = msg.url("/gui#hud")
+	self.exhibition_manager_url = msg.url("/game_manager#exhibition_manager")
+
+	-- Slot tracking: cada slot independiente almacena 0 o 1 objeto
+	-- Tabla plana: { [slot_url] = item_id }
+	-- 💾 El mapeo se persiste en game_state (inventory_furniture_slots): sin él,
+	-- al reabrir el juego los objetos depositados no aparecerían en su slot
+	-- (los slot GOs arrancan con sprite vacío). Se filtra el formato antiguo
+	-- (tablas anidadas) y valores no serializables.
+	self.furniture_slots = {}
+	local persisted_slots = game_state.get_global("inventory_furniture_slots")
+	if type(persisted_slots) == "table" then
+		for slot_url, item_id in pairs(persisted_slots) do
+			if type(slot_url) == "string" and type(item_id) == "string" then
+				self.furniture_slots[slot_url] = item_id
+			end
+		end
+	end
+
+	-- ⏱️ Timer inicial antes del primer spawn
+	--    El jugador tiene INITIAL_SPAWN_DELAY segundos para explorar.
+	--    Si ya hay objetos con estado guardado (partida en curso),
+	--    se salta el timer inicial para no entorpecer al jugador.
+	self.current_item = nil
+
+	-- Timer A: almacenamos la duración total la primera vez que se activa
+	-- para calcular el progreso (0-1) sin modificar inventory_core.
+	self.timer_duration = nil
+
+	-- Contador para limitar envío de progreso a ~10Hz
+	self.timer_progress_timer = 0
+
+	local has_existing_progress = next(persistence_data.items_status) ~= nil
+	if has_existing_progress then
+		self.initial_timer_active = false
+		spawn_next_item(self)
+		-- ⏰ Reanudar Timer A si el objeto activo quedó a medias en STORAGE
+		resume_storage_timer(self)
+		dprint("[Inventory Manager] Progreso existente detectado. Spawneando inmediatamente.")
+	else
+		self.initial_timer = INITIAL_SPAWN_DELAY
+		self.initial_timer_active = true
+		dprint("[Inventory Manager] Inicializado. Primer spawn en " .. INITIAL_SPAWN_DELAY .. "s")
+	end
+
+	-- 🖼️ Restaurar el sprite de cada slot ocupado (estanterías/vitrinas): sin
+	-- esto, los objetos en storage/exhibition/completed no aparecerían en su
+	-- posición al reabrir el juego.
+	restore_furniture_slots(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⏰ UPDATE: TIMERS
+-- ═══════════════════════════════════════════════════════
+
+function update(self, dt)
+	-- ⏱️ Timer inicial (solo antes del primer spawn)
+	if self.initial_timer_active then
+		self.initial_timer = self.initial_timer - dt
+		if self.initial_timer <= 0 then
+			self.initial_timer_active = false
+			dprint("[Inventory Manager] Timer inicial expirado. Spawneando primer objeto.")
+			spawn_next_item(self)
+		end
+		return
+	end
+
+	-- ⏱️ Timers del core
+	local timer_expired, spawn_expired = inventory_core.update(self.core, dt)
+
+	if timer_expired then
+		on_timer_expired(self)
+	end
+
+	if spawn_expired then
+		on_spawn_timer_expired(self)
+	end
+
+	-- ⏱️ Enviar progreso del Timer A al HUD (solo lectura, 10Hz)
+	-- No modifica el timer ni el core — solo lee el valor actual.
+	if self.core and self.core.timer_active then
+		if not self.timer_duration then
+			self.timer_duration = self.core.current_timer
+		end
+		self.timer_progress_timer = self.timer_progress_timer + dt
+		if self.timer_progress_timer >= 0.1 then
+			self.timer_progress_timer = 0
+			local remaining = math.max(0, self.core.current_timer)
+			local progress = self.timer_duration > 0 and (remaining / self.timer_duration) or 0
+			msg.post(self.hud_url, "update_timer_progress", {
+				remaining = remaining,
+				progress = progress
+			})
+		end
+	else
+		self.timer_progress_timer = 0
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("collectible_clicked") then
+		on_collectible_clicked(self)
+
+	elseif message_id == hash("furniture_clicked") then
+		on_furniture_clicked(self, message)
+
+	elseif message_id == hash("restoration_completed") then
+		on_restoration_completed(self)
+
+	elseif message_id == hash("reset_inventory") then
+		on_reset_inventory(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 FLUJO 1: SPAWN Y RECOGIDA (PICKUP)
+-- ═══════════════════════════════════════════════════════
+
+-- 🛠️ Refrescar el icono de disponibilidad del NPC de quiz de restauración
+-- (tipo quiz_restoration, registrado por npc.script en init): su icono
+-- depende del estado del objeto activo (gate: pieza en RESTORATION), no
+-- solo de su cooldown. Se avisa con npc_state_changed, el mismo mensaje que
+-- usa el dialogue_manager tras cada quiz. Se identifica por TIPO (no por id
+-- hardcodeado), así que una segunda restauradora se refresca sola.
+function refresh_restorer_icon(self)
+	local restorer_id = npc_spawn_state.find_npc_by_type(npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION)
+	if not restorer_id then return end
+	local npc_url = npc_spawn_state.get_npc_url(restorer_id)
+	if npc_url then
+		msg.post(npc_url, "npc_state_changed")
+	end
+end
+
+function spawn_next_item(self)
+	-- Buscar siguiente objeto pendiente
+	self.current_item = inventory_core.get_next_pending_item(self.core)
+
+	if not self.current_item then
+		-- Todos los objetos completados
+		dprint("[Inventory Manager] ¡Todos los objetos coleccionables han sido completados!")
+		local all_done = self.texts.inventory and self.texts.inventory.all_completed or "¡Todos completados!"
+		msg.post(self.hud_url, "show_alert", { text = all_done })
+		-- Ocultar contenedor de estado en el HUD
+		msg.post(self.hud_url, "update_hud_state", { state = nil })
+		-- Limpiar periodo activo (ya no hay objeto actual)
+		game_state.set_global("inventory_current_item_active", false)
+		game_state.set_global("inventory_current_item_period", nil)
+		game_state.set_global("inventory_current_item_id", nil)
+		return
+	end
+
+	-- Registrar item actual en el core
+	self.core.current_item_id = self.current_item.id
+
+	-- Si no tiene estado, iniciar en PICKUP
+	if not self.core.items_status[self.current_item.id] then
+		self.core.items_status[self.current_item.id] = inventory_core.STATES.PICKUP
+	end
+
+	local state = self.core.items_status[self.current_item.id]
+
+	-- Almacenar periodo actual en game_state para que los muebles
+	-- puedan consultarlo al hacer hover (comparación de periodos)
+	game_state.set_global("inventory_current_item_period", self.current_item.period)
+	game_state.set_global("inventory_current_item_active", true)
+	-- 🛠️ ID del objeto activo: lo consulta npc.script para el gate del quiz
+	--    de restauración (un NPC de tipo quiz_restoration solo ofrece quiz
+	--    con objeto en RESTORATION).
+	game_state.set_global("inventory_current_item_id", self.current_item.id)
+
+	if state == inventory_core.STATES.PICKUP then
+		-- Mostrar los objetos coleccionables (ya están en su posición del editor)
+		if go.exists(self.collectible_url) then
+			-- Activar collectible_object (collision + sprite visible)
+			msg.post(self.collectible_url, "set_active", { active = true })
+
+			-- Cambiar sprite al del objeto actual
+			local sprite_url = msg.url(self.collectible_url.socket, self.collectible_url.path, hash("sprite"))
+			if go.exists(sprite_url) then
+				sprite.play_flipbook(sprite_url, hash(self.current_item.sprite_id))
+			end
+
+			-- Configurar exhibition_object.script con el ID del objeto actual
+			msg.post(self.collectible_url, "set_custom_id", { item_id = self.current_item.item_id })
+		end
+		if go.exists(self.btn_url) then
+			-- Mostrar btn_collectible y activar su collision
+			msg.post(self.btn_url, "set_visible", { visible = true })
+			msg.post(self.btn_url, "enable_collision", { enabled = true })
+		end
+
+		-- 🔊 Sonido de aparición del objeto
+		sound.play("#spawn_collectible")
+
+		-- Mostrar alerta visual (desde archivo de textos; nombre localizado)
+		local new_msg = self.texts.inventory and self.texts.inventory.new_object or "¡Nuevo objeto: %s!"
+		msg.post(self.hud_url, "show_alert", {
+			text = string.format(new_msg, get_item_name(self, self.current_item))
+		})
+	else
+		-- Estado posterior a PICKUP (COLLECTED, RESTORATION, STORAGE, EXHIBITION):
+		-- ocultar ambos objetos (sin moverlos, solo desactivar collision y visibilidad)
+		if go.exists(self.collectible_url) then
+			msg.post(self.collectible_url, "set_active", { active = false })
+		end
+		if go.exists(self.btn_url) then
+			msg.post(self.btn_url, "set_visible", { visible = false })
+			msg.post(self.btn_url, "enable_collision", { enabled = false })
+		end
+	end	-- Notificar al HUD con el estado real
+	msg.post(self.hud_url, "update_hud_state", {
+		item_id = self.current_item.id,
+		state = state,
+		sprite_id = self.current_item.sprite_id
+	})
+
+	-- ⏰ Sincronizar el estado al global de game_state (incluido PICKUP): el HUD
+	-- lee inventory_items_status para sus recordatorios periódicos (text_alert).
+	-- Sin esta llamada, un objeto recién aparecido en PICKUP no llegaría nunca al
+	-- global (save_inventory_state solo se llama en eventos de interacción) y el
+	-- recordatorio de recogida (alert_new_material) nunca se dispararía.
+	save_inventory_state(self)
+
+	dprint("[Inventory Manager] Spawneado: " .. self.current_item.id .. " (estado: " .. state .. ")")
+end
+
+function on_collectible_clicked(self)
+	if not self.current_item then return end
+
+	local current_state = self.core.items_status[self.current_item.id]
+
+	-- Solo procesar si está en PICKUP
+	if current_state ~= inventory_core.STATES.PICKUP then
+		dprint("[Inventory Manager] Objeto ya recogido, ignorando clic")
+		-- Ocultar ambos objetos por si acaso están visibles (save antiguo, etc.)
+		if go.exists(self.collectible_url) then
+			msg.post(self.collectible_url, "set_active", { active = false })
+		end
+		if go.exists(self.btn_url) then
+			msg.post(self.btn_url, "set_visible", { visible = false })
+			msg.post(self.btn_url, "enable_collision", { enabled = false })
+		end
+		local already_text = self.texts.inventory and self.texts.inventory.already_collected or "Este objeto ya ha sido recogido"
+		msg.post(self.hud_url, "show_alert", { text = already_text })
+		return
+	end
+
+	-- Cerrar panel de información si estaba abierto
+	msg.post(self.exhibition_manager_url, "close_exhibition")
+
+	-- 🔊 Sonido de recogida inicial
+	sound.play("#pick_up")
+
+	-- Desactivar objetos visualmente (sin mover)
+	if go.exists(self.collectible_url) then
+		msg.post(self.collectible_url, "set_active", { active = false })
+	end
+	if go.exists(self.btn_url) then
+		msg.post(self.btn_url, "set_visible", { visible = false })
+		msg.post(self.btn_url, "enable_collision", { enabled = false })
+	end
+
+	-- Calcular siguiente estado
+	local next_state = inventory_core.calculate_next_state(self.core, self.current_item)
+
+	-- Si el siguiente estado es STORAGE, usar COLLECTED en su lugar.
+	-- COLLECTED = "recogido pero no depositado en estantería".
+	-- El timer (Timer A) SOLO se activa cuando el jugador deposita
+	-- el objeto en la estantería (on_furniture_clicked → transition_to).
+	-- Para objetos que requieren restauración, el flujo sigue siendo
+	-- RESTORATION → (NPC restaura) → STORAGE → (timer) → EXHIBITION.
+	if next_state == inventory_core.STATES.STORAGE then
+		next_state = inventory_core.STATES.COLLECTED
+	end
+
+	-- Establecer estado (sin timer — el timer solo se activa al depositar)
+	self.core.items_status[self.current_item.id] = next_state
+
+	-- 🛠️ El estado del objeto activo cambió (RESTORATION o COLLECTED): la
+	-- disponibilidad de la restauradora depende de ello → refrescar su icono.
+	refresh_restorer_icon(self)
+
+	-- Notificar al HUD
+	msg.post(self.hud_url, "update_hud_state", {
+		item_id = self.current_item.id,
+		state = next_state,
+		sprite_id = self.current_item.sprite_id
+	})
+
+	-- Mostrar alerta según el estado (sin timer)
+	local inv = self.texts.inventory or {}
+	if next_state == inventory_core.STATES.COLLECTED then
+		-- El objeto pasó a COLLECTED: indicar al jugador que vaya a la estantería
+		local alert_text = inv.pickup_storage or "Objeto recogido. Dirígete a la Zona de Almacén para depositarlo en su correspondiente estantería."
+		msg.post(self.hud_url, "show_alert", { text = alert_text })
+		dprint("[Inventory Manager] Objeto recogido → COLLECTED. Timer se iniciará al depositar en estantería.")
+	elseif next_state == inventory_core.STATES.RESTORATION then
+		local alert_text = inv.pickup_restoration or "Objeto enviado a restauración."
+		msg.post(self.hud_url, "show_alert", { text = alert_text })
+		dprint("[Inventory Manager] Objeto recogido → RESTORATION.")
+	else
+		local direct_text = inv.pickup_direct or "Objeto transferido correctamente"
+		msg.post(self.hud_url, "show_alert", { text = direct_text })
+		dprint("[Inventory Manager] Transición inmediata a: " .. next_state)
+	end
+
+	-- Persistir estado
+	save_inventory_state(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⏱️ FLUJO 2: TIMER EXPIRADO
+-- ═══════════════════════════════════════════════════════
+
+function on_timer_expired(self)
+	if not self.current_item then return end
+
+	local current_state = self.core.items_status[self.current_item.id]
+
+	-- El timer del core SOLO se ejecuta para STORAGE → EXHIBITION
+	-- (RESTORATION no tiene timer, lo gestiona el NPC restaurador)
+	if current_state == inventory_core.STATES.STORAGE then
+		-- Avanzar a EXHIBITION
+		self.core.items_status[self.current_item.id] = inventory_core.STATES.EXHIBITION
+		self.timer_duration = nil  -- Limpiar duración guardada
+
+		-- Ocultar pie timer en el HUD
+		msg.post(self.hud_url, "hide_timer_progress")
+
+		local inv = self.texts.inventory or {}
+		-- 🔊 Aviso PROACTIVO: el Timer A expiró mientras el jugador hacía otras
+		--    tareas → sonido suave de notificación (smooth_notification, lo
+		--    reproduce el HUD vía el flag alert_sound al recibir el mensaje).
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.storage_complete or "¡Objeto listo para exhibición! Transfiérelo a una vitrina.",
+			alert_sound = true
+		})
+
+		-- 🎓 One-shot educativo (rule_display_case): la primera vez que un objeto
+		-- queda listo para vitrina (EXHIBITION), se enseña la mecánica de la
+		-- vitrina. La flag persiste en game_state (savegame) para no repetirlo.
+		if not game_state.get_global("rule_display_case_shown") then
+			game_state.set_global("rule_display_case_shown", true)
+			local rule_text = self.texts.tutorials and self.texts.tutorials.rule_display_case
+			if rule_text then
+				msg.post(self.hud_url, "show_alert", { text = rule_text })
+			end
+		end
+
+		msg.post(self.hud_url, "update_hud_state", {
+			item_id = self.current_item.id,
+			state = inventory_core.STATES.EXHIBITION,
+			sprite_id = self.current_item.sprite_id
+		})
+
+		save_inventory_state(self)
+		dprint("[Inventory Manager] Timer STORAGE expirado. Objeto listo para exhibición: " .. self.current_item.id)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⏱️ FLUJO 2B: TIMER B EXPIRADO (COOLDOWN TRAS COMPLETAR)
+-- ═══════════════════════════════════════════════════════
+
+function on_spawn_timer_expired(self)
+	-- Timer B ha expirado: spawnear el siguiente objeto.
+	-- Este timer solo se inicia DESPUÉS de completar un objeto en vitrina.
+	spawn_next_item(self)
+	dprint("[Inventory Manager] Timer B expirado. Spawneando siguiente objeto.")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🪑 FLUJO 3: INTERACCIÓN CON MUEBLE
+-- ═══════════════════════════════════════════════════════
+
+-- 💰 Depositar en estantería: nuevo depósito o re-clic
+local function handle_deposit(self, message, furniture_url_str)
+	local item_data = collectibles_data.items[self.current_item.id]
+	local already_deposited = (self.furniture_slots[furniture_url_str] == self.current_item.id)
+
+	if already_deposited then
+		-- Re-clic: solo actualizar sprite, NO reiniciar timer
+		-- 🛠️ Salvedad tras recargar partida: si el objeto está en STORAGE pero el
+		-- Timer A no está activo (save antiguo sin segundos restantes persistidos),
+		-- reinícialo — sin esto el objeto quedaría atascado en storage para siempre
+		-- (el anti-reclic impide reiniciar el timer con un re-clic normal).
+		if self.core.items_status[self.current_item.id] == inventory_core.STATES.STORAGE
+			and not self.core.timer_active then
+			inventory_core.transition_to(self.core, inventory_core.STATES.STORAGE)
+			dprint("[Inventory Manager] Timer A reiniciado (save sin tiempo persistido)")
+		end
+		msg.post(furniture_url_str, "update_slot", {
+			slot = 1,
+			sprite_id = item_data.sprite_id,
+			state = "in_transit",
+			item_id = self.current_item.id
+		})
+		local inv_t = self.texts.inventory or {}
+		msg.post(self.hud_url, "show_alert", {
+			text = inv_t.already_deposited or "El objeto ya está depositado en esta estantería."
+		})
+		dprint("[Inventory Manager] Re-clic en estantería — timer no reiniciado")
+	else
+		-- Nuevo depósito: asignar al slot, iniciar timer, actualizar sprite
+		-- Advertir si el slot ya estaba ocupado por otro item (no debería ocurrir en flujo normal)
+		if self.furniture_slots[furniture_url_str] and self.furniture_slots[furniture_url_str] ~= self.current_item.id then
+			dprint("[Inventory Manager] ⚠️ Slot " .. furniture_url_str .. " estaba ocupado por " .. tostring(self.furniture_slots[furniture_url_str]) .. " — sobrescribiendo")
+		end
+		sound.play("#insertion")
+		self.furniture_slots[furniture_url_str] = self.current_item.id
+		inventory_core.transition_to(self.core, inventory_core.STATES.STORAGE)
+
+		msg.post(furniture_url_str, "update_slot", {
+			slot = 1,
+			sprite_id = item_data.sprite_id,
+			state = "storage",
+			item_id = self.current_item.id
+		})
+
+		local inv = self.texts.inventory or {}
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.deposited or "Objeto depositado. Esperando periodo de exhibición..."
+		})
+		msg.post(self.hud_url, "update_hud_state", {
+			item_id = self.current_item.id,
+			state = inventory_core.STATES.STORAGE,
+			sprite_id = item_data.sprite_id
+		})
+		save_inventory_state(self)
+		dprint("[Inventory Manager] Objeto depositado en slot: " .. furniture_url_str)
+	end
+end
+
+-- ✅ Completar en vitrina: limpiar slot antiguo, asignar nuevo, Timer B
+local function handle_complete(self, message, furniture_url_str)
+	sound.play("#quiz_success")
+	local item_data = collectibles_data.items[self.current_item.id]
+	local inv = self.texts.inventory or {}
+	inventory_core.save_completion(self.core)
+
+	-- Buscar slot antiguo en estantería ANTES de asignar el nuevo en vitrina
+	local old_furniture_path = find_furniture_slot_for_item(self, self.current_item.id)
+	if old_furniture_path then
+		msg.post(old_furniture_path, "clear_slot")
+		self.furniture_slots[old_furniture_path] = nil
+	end
+
+	-- Asignar a este slot de vitrina
+	self.furniture_slots[furniture_url_str] = self.current_item.id
+
+	msg.post(furniture_url_str, "update_slot", {
+		slot = 1,
+		sprite_id = item_data.sprite_id,
+		state = "completed",
+		item_id = self.current_item.id
+	})
+
+	local exibited_text = inv.exhibited or "¡%s exhibido correctamente!"
+	msg.post(self.hud_url, "show_alert", {
+		text = string.format(exibited_text, get_item_name(self, item_data))
+	})
+	msg.post(self.hud_url, "update_hud_state", {
+		item_id = self.current_item.id,
+		state = inventory_core.STATES.COMPLETED,
+		sprite_id = self.current_item.sprite_id
+	})
+
+	save_inventory_state(self)
+	msg.post(self.hud_url, "hide_timer_progress")
+	inventory_core.start_spawn_timer(self.core)
+	dprint("[Inventory Manager] Timer B iniciado — siguiente objeto en 5s")
+
+	local next_msg = inv.spawning_next or "¡Exhibido! Preparando siguiente objeto..."
+	msg.post(self.hud_url, "show_alert", { text = next_msg })
+end
+
+-- 🔄 Marcar slot como "en tránsito" (segundo clic en estantería para vitrina)
+local function handle_wrong_furniture_shelf(self, furniture_url_str, furniture_period)
+	local inv = self.texts.inventory or {}
+	local item_in_this_shelf = (self.furniture_slots[furniture_url_str] == self.current_item.id)
+
+	if item_in_this_shelf then
+		sound.play("#insertion")
+		local item_data = collectibles_data.items[self.current_item.id]
+		msg.post(furniture_url_str, "update_slot", {
+			slot = 1,
+			sprite_id = item_data.sprite_id,
+			state = "in_transit",
+			item_id = self.current_item.id
+		})
+		-- 🏛️ Periodo LOCALIZADO (general_text → inventory.periods): antes se
+		--    concatenaba la clave cruda ("pal", "neo"...). Fallback si la clave
+		--    falta (no rompe).
+		local period_name = (inv.periods and inv.periods[furniture_period]) or furniture_period
+		msg.post(self.hud_url, "show_alert", {
+			text = string.format(inv.ready_for_showcase or "Objeto listo para vitrina. Dirígete a la vitrina del periodo %s.", period_name)
+		})
+		dprint("[Inventory Manager] Slot marcado como in_transit (segundo clic)")
+	else
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_wrong_furniture or "El objeto está listo para vitrina. Dirígete a una vitrina del periodo correcto."
+		})
+	end
+end
+
+function on_furniture_clicked(self, message)
+	local furniture_url_str = tostring(message.url):match("%[(.-)%]") or tostring(message.url)
+
+	-- 🖼️ Slot con objeto COMPLETADO (vitrina): mostrar su información de
+	-- exhibición en lugar de la interacción de mueble — mismo panel que en fase
+	-- pickup. Se comprueba ANTES del guard de current_item: aplica también
+	-- cuando todos los objetos están completados (sin objeto activo).
+	local completed_item_id = self.furniture_slots[furniture_url_str]
+	if completed_item_id and self.core.items_status[completed_item_id] == inventory_core.STATES.COMPLETED then
+		show_completed_exhibition_info(self, furniture_url_str, completed_item_id)
+		return
+	end
+
+	if not self.current_item then
+		dprint("[Inventory Manager] No hay objeto activo")
+		return
+	end
+
+	local inv = self.texts.inventory or {}
+	local furniture_type = collectibles_data.hash_to_str(message.furniture_type)
+	local furniture_period = collectibles_data.hash_to_str(message.period)
+
+	local action = inventory_core.validate_furniture_interaction(
+		self.core, furniture_type, furniture_period
+	)
+
+	dprint("[Inventory Manager] Interacción con mueble: " .. tostring(furniture_type)
+		.. " periodo=" .. tostring(furniture_period)
+		.. " acción=" .. tostring(action))
+
+	if action == "deposit" then
+		handle_deposit(self, message, furniture_url_str)
+
+	elseif action == "complete" then
+		handle_complete(self, message, furniture_url_str)
+
+	elseif action == "wrong_furniture" and furniture_type == "shelf" then
+		handle_wrong_furniture_shelf(self, furniture_url_str, furniture_period)
+
+	elseif action == "wrong_furniture" then
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_wrong_furniture or "El objeto está listo para vitrina. Dirígete a una vitrina del periodo correcto."
+		})
+
+	elseif action == "wrong_period" then
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_wrong_period or "Esta estantería/vitrina no pertenece a la época adecuada"
+		})
+
+	elseif action == "needs_restoration" then
+		-- 🛠️ La pieza aún está en RESTORATION: no se puede depositar hasta
+		-- completar la restauración con la restauradora.
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_needs_restoration or "Necesitas restaurar el objeto antes de realizar su depósito"
+		})
+
+	elseif action == "invalid_state" then
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_invalid_state or "No puedes interactuar con este mueble en este momento."
+		})
+
+	elseif action == "no_item" then
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_no_item or "No tienes ningún objeto que depositar."
+		})
+
+	else
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.error_no_action or "Acción no disponible."
+		})
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🛠️ RESTAURACIÓN COMPLETADA (desde NPC restaurador)
+-- ═══════════════════════════════════════════════════════
+
+function on_restoration_completed(self)
+	if not self.current_item then return end
+
+	local current_state = self.core.items_status[self.current_item.id]
+	if current_state == inventory_core.STATES.RESTORATION then
+		-- Avanzar directamente a STORAGE (sin timer — RESTORATION no tiene timer propio)
+		self.core.items_status[self.current_item.id] = inventory_core.STATES.STORAGE
+
+		-- 🛠️ La pieza ya no está en RESTORATION: la restauradora deja de estar
+		-- "disponible" para el quiz → refrescar su icono.
+		refresh_restorer_icon(self)
+
+		local inv = self.texts.inventory or {}
+		msg.post(self.hud_url, "show_alert", {
+			text = inv.restoration_complete or "¡Restauración completada! Deposita el objeto en una estantería."
+		})
+
+		msg.post(self.hud_url, "update_hud_state", {
+			item_id = self.current_item.id,
+			state = inventory_core.STATES.STORAGE,
+			sprite_id = self.current_item.sprite_id
+		})
+
+		save_inventory_state(self)
+		dprint("[Inventory Manager] Restauración completada para: " .. self.current_item.id)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📊 GESTIÓN DE SLOTS EN MUEBLES
+-- ═══════════════════════════════════════════════════════
+
+-- 🖼️ Muestra el panel de información de un objeto ya exhibido (vitrina) al
+-- clicar sobre él — mismo flujo que en fase pickup (exhibition_object.script):
+-- el exhibition_manager localiza el texto por ID numérico y el panel sigue al
+-- slot (auto-cierre por distancia como con el objeto sin recoger).
+-- ⚠️ GOTCHA #1: sin 'local' (asigna a la forward declaration, ver arriba).
+function show_completed_exhibition_info(self, slot_url, item_id)
+	local item_data = collectibles_data.items[item_id]
+	if not item_data then
+		dprint("[Inventory Manager] Item desconocido en slot completado: " .. tostring(item_id))
+		return
+	end
+
+	local slot_id = msg.url(slot_url)
+	if not go.exists(slot_id) then return end
+	local world_pos = go.get_position(slot_id)
+	local screen_pos = screen_utils.world_to_screen(world_pos)
+
+	-- 🔊 Mismo sonido de clic que el objeto interactivo en fase pickup
+	if go.exists("#clic") then
+		sound.play("#clic")
+	end
+
+	msg.post(self.exhibition_manager_url, "start_exhibition_info", {
+		object_id = tostring(item_data.item_id),
+		screen_pos = screen_pos,
+		world_pos = world_pos,
+		game_object_id = slot_url
+	})
+	dprint("[Inventory Manager] Mostrando info de objeto completado: " .. item_id)
+end
+
+--- Encuentra en qué slot independiente está un item.
+--- @return string|nil  Ruta del slot que contiene el item
+function find_furniture_slot_for_item(self, item_id)
+	for slot_url, stored_id in pairs(self.furniture_slots) do
+		-- Ignorar datos heredados del formato antiguo (tablas anidadas)
+		if type(stored_id) ~= "table" then
+			if stored_id == item_id then
+				return slot_url
+			end
+		end
+	end
+	return nil
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 💾 PERSISTENCIA
+-- ═══════════════════════════════════════════════════════
+
+function save_inventory_state(self)
+	local save_data = inventory_core.get_save_data(self.core)
+	game_state.set_global("inventory_items_status", save_data.items_status)
+
+	-- 💾 Mapeo slot→objeto (posiciones en estanterías/vitrinas) y segundos
+	-- restantes del Timer A: se restauran al cargar la partida (ver
+	-- restore_furniture_slots / resume_storage_timer).
+	game_state.set_global("inventory_furniture_slots", self.furniture_slots)
+	local remaining = 0
+	if self.core.timer_active and self.core.current_timer then
+		remaining = math.max(0, self.core.current_timer)
+	end
+	game_state.set_global("inventory_storage_remaining", remaining)
+
+	game_state.save()
+
+	-- 🏆 Reevaluar tareas: aquí el global inventory_items_status ya está fresco
+	-- (tarea 1: 10 expuestos; tarea 3: 5 restauraciones terminadas con mín. 3
+	-- aciertos). Barato e idempotente — también cubre pickup/depósito/spawn.
+	game_state.evaluate_tasks()
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖼️ RESTAURACIÓN AL CARGAR PARTIDA
+-- ═══════════════════════════════════════════════════════
+
+-- Reenvía update_slot a cada slot ocupado para reconstruir su sprite tras
+-- recargar. Los slot GOs arrancan con sprite vacío (init → set_slot_sprite
+-- "empty"); sin esta restauración, los objetos depositados (storage /
+-- exhibition / completed) no aparecerían en su posición.
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): definida SIN 'local' — asigna a la forward
+-- declaration de arriba (llamada desde init). 'local function' aquí crearía
+-- una variable nueva que sombrea al upvalue declarado (quedaría en nil).
+function restore_furniture_slots(self)
+	for slot_url, item_id in pairs(self.furniture_slots) do
+		local item_data = collectibles_data.items[item_id]
+		if not item_data then
+			dprint("[Inventory Manager] Slot " .. tostring(slot_url) .. " con item desconocido: " .. tostring(item_id))
+		else
+			local state = self.core.items_status[item_id]
+			local slot_state = nil
+			if state == inventory_core.STATES.STORAGE or state == inventory_core.STATES.EXHIBITION then
+				-- El objeto sigue en la estantería a opacidad completa hasta que
+				-- el jugador vuelva a clicar (entonces pasa a "in_transit").
+				slot_state = "storage"
+			elseif state == inventory_core.STATES.COMPLETED then
+				slot_state = "completed"
+			else
+				-- Estados sin slot (pickup/collected/restoration): mapeo obsoleto
+				dprint("[Inventory Manager] Slot " .. tostring(slot_url) .. " con estado sin slot: " .. tostring(state))
+			end
+
+			if slot_state then
+				local url = msg.url(slot_url)
+				if go.exists(url) then
+					msg.post(url, "update_slot", {
+						slot = 1,
+						sprite_id = item_data.sprite_id,
+						state = slot_state,
+						item_id = item_id
+					})
+					dprint("[Inventory Manager] Slot restaurado: " .. tostring(slot_url) .. " → " .. item_id .. " (" .. slot_state .. ")")
+				end
+			end
+		end
+	end
+end
+
+-- Reanuda el Timer A (storage) tras recargar: los segundos restantes se
+-- persisten en game_state (inventory_storage_remaining) al guardar. Sin esto,
+-- un cierre del juego a mitad de STORAGE dejaría el objeto atascado (el
+-- re-clic en la estantería no reinicia el timer por diseño anti-reclic).
+-- ⚠️ GOTCHA #1: sin 'local' (asigna a la forward declaration, ver arriba).
+function resume_storage_timer(self)
+	local remaining = game_state.get_global("inventory_storage_remaining")
+	if not (type(remaining) == "number" and remaining > 0) then return end
+
+	local state = self.core.items_status[self.core.current_item_id]
+	if state == inventory_core.STATES.STORAGE then
+		self.core.current_timer = remaining
+		self.core.timer_active = true
+		-- Duración completa configurada para que la barra de progreso del HUD
+		-- se muestre correcta (no la del tiempo restante reanudado)
+		self.timer_duration = config.balance.storage_timer_duration or 10
+		dprint("[Inventory Manager] Timer A reanudado con " .. string.format("%.1f", remaining) .. "s restantes")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔄 RESET DE DESARROLLO (tecla R)
+-- ═══════════════════════════════════════════════════════
+
+function on_reset_inventory(self)
+	dprint("[Inventory Manager] 🔄 Reset de desarrollo — reiniciando inventario")
+
+	-- Limpiar slots de muebles (incluido el mapeo persistido)
+	self.furniture_slots = {}
+	game_state.set_global("inventory_furniture_slots", {})
+	game_state.set_global("inventory_storage_remaining", 0)
+
+	-- Reiniciar core: limpiar estados y timer
+	self.core.items_status = {}
+	self.core.current_timer = 0
+	self.core.timer_active = false
+	self.core.current_item_id = nil
+
+	-- Cerrar panel de exposición si estaba abierto
+	msg.post(self.exhibition_manager_url, "close_exhibition")
+
+	-- Limpiar periodo activo en game_state
+	game_state.set_global("inventory_current_item_active", false)
+	game_state.set_global("inventory_current_item_period", nil)
+	game_state.set_global("inventory_current_item_id", nil)
+
+	-- 🛠️ Sin objeto activo → el icono de la restauradora debe reflejarlo
+	refresh_restorer_icon(self)
+
+	-- Limpiar estado del pie timer
+	self.timer_duration = nil
+	self.timer_progress_timer = 0
+	msg.post(self.hud_url, "hide_timer_progress")
+
+	-- Spawnear el primer objeto desde cero
+	self.current_item = nil
+	spawn_next_item(self)
+
+	dprint("[Inventory Manager] ✅ Inventario reiniciado")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧹 LIMPIEZA
+-- ═══════════════════════════════════════════════════════
+
+function final(self)
+	save_inventory_state(self)
+	game_state.flush()
+end

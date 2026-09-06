@@ -1,0 +1,228 @@
+-- features/furniture/office_cabinet.script
+-- ═══════════════════════════════════════════════════════
+-- 🗄️ ARMARIO DE OFICINA INTERACTIVO
+-- ═══════════════════════════════════════════════════════
+--
+--   Controla el hover (tintado claro) y el clic (abrir/cerrar)
+--   del armario.
+--
+--   🗄️ Modelo de ocultación del interior (Ago 2026, simplificado): el armario
+--   mantiene una z ESTABLE definida en el editor (colección z 0.19 → sprite en
+--   pantalla 0.20, delante del jugador en z 0.1; GOTCHA #31: el z se mueve en
+--   el GAME OBJECT, no en el sprite — pero aquí ya no se anima). Los botes
+--   interiores (z 0.22, por encima) se ACTIVAN cuando la animación de apertura
+--   FINALIZA y se DESACTIVAN al cerrar la puerta sin recogerlos: office_cabinet
+--   notifica cabinet_state.set_open() en el callback del flipbook, y el bote
+--   consulta cabinet_state.get_open(pos) en su update() (sprite + colisiones
+--   desactivadas → sin hover ni clic posibles mientras está oculto).
+--
+--   Estados:
+--     cerrado (is_open = false) → animación office_cabinet_idle
+--     abierto (is_open = true)  → animación office_cabinet_open (al cerrar se
+--       reproduce office_cabinet_close); el estado del módulo compartido se
+--       actualiza al terminar cada animación.
+--
+--   🚶 Auto-cierre (Ago 2026): si el jugador se aleja ≥ close_distance (200
+--     uds por defecto, configurable en config.balance → main/config.lua)
+--     dejando la puerta abierta, se cierra automáticamente por el MISMO
+--     close_cabinet() que el clic → el mecanismo de ocultación del interior
+--     (cabinet_state.set_open en el callback del flipbook) se aplica igual:
+--     los botes no recogidos quedan ocultos al terminar la animación.
+--
+--   Interacción (vía main/cursor.script):
+--     mouse_hover → aclara el sprite (tintado claro)
+--     interact    → toggle abrir/cerrar (solo si el cursor está en hover,
+--                   mismo patrón que bookcase.script)
+--
+--   ⚠️  Todas las funciones auxiliares son `local` y se definen ANTES de
+--       on_message (GOTCHA #1 de docs/DEV_GOTCHAS.md): en Defold todos los
+--       scripts comparten el mismo estado Lua y on_message resuelve las
+--       funciones en el momento de la llamada.
+--
+--   Componentes esperados en el .go:
+--     sprite_office_cabinet      → sprite con animaciones office_cabinet_idle/open/close
+--     collisionobject_cursor     → grupo "interactivable", máscara "cursor"
+--     cabinet_slide_door_open    → sonido de apertura
+--     cabinet_slide_door_close   → sonido de cierre
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-20
+-- ═══════════════════════════════════════════════════════
+
+local config = require "main.config"
+local cabinet_state = require "main.cabinet_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_CABINET = false
+local dprint = config.make_log(DEBUG_CABINET)
+
+-- Tint: aclarado en hover (coherente con doors.script TINT_HOVER_LIGHTEN y
+-- bookcase.script, que usan valores >1.0).
+local TINT_NORMAL = vmath.vector4(1, 1, 1, 1)
+local TINT_HOVER  = vmath.vector4(1.3, 1.3, 1.3, 1)
+
+-- Animaciones del atlas features/furniture/furniture.atlas
+local ANIM_IDLE  = hash("office_cabinet_idle")
+local ANIM_OPEN  = hash("office_cabinet_open")
+local ANIM_CLOSE = hash("office_cabinet_close")
+
+-- Duración de las tweens (misma convención que doors.script: 0.15s)
+local TWEEN_TIME = 0.15
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: TINTADO CLARO
+-- ═══════════════════════════════════════════════════════
+local function on_mouse_hover(self, entering)
+	local target = entering and TINT_HOVER or TINT_NORMAL
+	go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, target, go.EASING_OUTQUAD, TWEEN_TIME)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🗄️ ABRIR / CERRAR
+-- ═══════════════════════════════════════════════════════
+local function open_cabinet(self)
+	self.is_open = true
+	self.is_animating = true
+
+	-- Animación: abrir (01→03). Al FINALIZAR, notificar al módulo compartido:
+	-- los botes interiores se activan (visible + interactuable) solo cuando la
+	-- animación de apertura termina (Ago 2026: activación por estado, no por z).
+	sprite.play_flipbook(self.sprite_url, ANIM_OPEN, function()
+		cabinet_state.set_open(go.get_id(), true)
+		self.is_animating = false
+	end)
+
+	-- Sonido: abrir
+	sound.play("#cabinet_slide_door_open")
+
+	dprint("[Armario] Abierto (animación en curso → activación al terminar)")
+end
+
+local function close_cabinet(self)
+	self.is_open = false
+	self.is_animating = true
+
+	-- Animación: cerrar (03→01). Al FINALIZAR, notificar al módulo compartido:
+	-- los botes interiores se desactivan (ocultos, sin hover/clic) si el
+	-- jugador cierra la puerta sin recogerlos (también en el auto-cierre).
+	sprite.play_flipbook(self.sprite_url, ANIM_CLOSE, function()
+		cabinet_state.set_open(go.get_id(), false)
+		self.is_animating = false
+	end)
+
+	-- Sonido: cerrar
+	sound.play("#cabinet_slide_door_close")
+
+	dprint("[Armario] Cerrado (animación en curso → desactivación al terminar)")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INTERACCIÓN (CLIC)
+-- ═══════════════════════════════════════════════════════
+local function on_interact(self)
+	if self.is_open then
+		close_cabinet(self)
+	else
+		open_cabinet(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DEL SCRIPT
+-- ═══════════════════════════════════════════════════════
+function init(self)
+	self.is_open = false
+	self.is_animating = false
+	self.is_hovered = false
+
+	-- URL del sprite cacheada (regla #4: no construir msg.url en handlers)
+	self.sprite_url = msg.url(nil, go.get_id(), hash("sprite_office_cabinet"))
+
+	-- 🚶 Auto-cierre: URL del jugador cacheada + distancia de cierre leída de
+	--    config.balance (fallback 200 — convención del proyecto: una clave
+	--    borrada nunca rompe el juego, mismo patrón que interaction_range en
+	--    cursor.script) + cuadrado para comparar sin alocar (§1, door_main).
+	self.player_url = msg.url("/player")
+	self.close_distance = config.balance.cabinet_auto_close_distance or 200
+	self.close_distance_sqr = self.close_distance * self.close_distance
+
+	-- Asegurar tint y animación iniciales correctos (por si el editor dejó
+	-- un valor residual)
+	go.set(self.sprite_url, "tint", TINT_NORMAL)
+	sprite.play_flipbook(self.sprite_url, ANIM_IDLE)
+
+	-- 🗄️ Registrar el armario en cabinet_state: la caja de cobertura coincide
+	--    con el collisionobject_cursor del .go (BOX 32.5×37.5 centrada en
+	--    y=+2 local) EN COORDENADAS DEL MUNDO: centro y semiejes escalados por
+	--    el scale del GO (office_cabinet3 usa scale x 0.9 → 29.25×37.5).
+	--    ⚠️ Antes estaba DESINCRONIZADA (32.5×27.5 en y=-7 — GOTCHA Ago 2026):
+	--    la banda superior del armario (y ∈ [GO.y+20.5, GO.y+39.5] real) no
+	--    quedaba cubierta → un bote colocado ahí NUNCA se desactivaba con el
+	--    armario cerrado (visible y recogible a través de la puerta) y el
+	--    punto de interacción del armario se medía 9 uds por debajo de la caja
+	--    real. Si se redimensiona esa caja en el editor, actualizar aquí los
+	--    semiejes (y el offset si se mueve). El z del game object es el ESTABLE
+	--    definido en el editor (colección z 0.19 → sprite 0.20): ya no se
+	--    anima ni se sobreescribe en runtime.
+	local pos = go.get_position()
+	local scale = go.get_scale()
+	cabinet_state.register(go.get_id(),
+		pos + vmath.vector3(0, 2 * scale.y, 0),
+		vmath.vector3(32.5 * scale.x, 37.5 * scale.y, 0))
+	cabinet_state.set_open(go.get_id(), false)
+
+	-- ⚠️ Sin acquire_input_focus: cursor.script detecta colisiones y envía
+	-- "interact" y "mouse_hover" según corresponda.
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚶 UPDATE: AUTO-CIERRE AL ALEJARSE
+-- ═══════════════════════════════════════════════════════
+function update(self, dt)
+	-- 🚶 Auto-cierre (Ago 2026): si el armario quedó ABIERTO y el jugador se
+	-- aleja ≥ close_distance, se cierra solo por el MISMO close_cabinet() que
+	-- el clic → la ocultación del interior (cabinet_state.set_open en el
+	-- callback del flipbook) se aplica igual: los botes que no se recogieron
+	-- quedan ocultos al terminar la animación de cierre.
+	-- Durante una animación (abrir/cerrar) no se evalúa: se espera a que
+	-- termine y, si el jugador sigue lejos, se cierra. Sin riesgo de
+	-- flickering: al cerrarse NO se vuelve a abrir solo (solo por clic).
+	if not self.is_open or self.is_animating then return end
+
+	if go.exists(self.player_url) then
+		local player_pos = go.get_position(self.player_url)
+		local cabinet_pos = go.get_position()
+		-- Distancia al cuadrado por componentes (sin alocar — §1), equivalente
+		-- a `length >= close_distance` (ambos lados no negativos).
+		local dx = player_pos.x - cabinet_pos.x
+		local dy = player_pos.y - cabinet_pos.y
+		if dx * dx + dy * dy >= self.close_distance_sqr then
+			dprint("[Armario] Auto-cerrado (jugador a ≥ " .. self.close_distance .. " uds)")
+			close_cabinet(self)
+		end
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		if message.enter and not self.is_hovered then
+			self.is_hovered = true
+			on_mouse_hover(self, true)
+		elseif not message.enter and self.is_hovered then
+			self.is_hovered = false
+			on_mouse_hover(self, false)
+		end
+
+	elseif message_id == hash("interact") then
+		-- Solo interactuar si el cursor está realmente sobre el armario
+		-- (evita recibir interact desde otros objetos cercanos o mensajes extraviados)
+		if self.is_hovered then
+			on_interact(self)
+		else
+			dprint("[Armario] ⚠️ interact ignorado (no está en hover)")
+		end
+	end
+end

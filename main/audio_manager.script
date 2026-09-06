@@ -1,0 +1,477 @@
+-- main/audio_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🎵 GESTOR CENTRAL DE AUDIO (refactor Ago 2026)
+-- ═══════════════════════════════════════════════════════
+--
+--   Arquitectura (post-refactor):
+--     • 🎶 PLAYLIST global secuencial: cada pista suena su duración
+--       COMPLETA (dato estático `dur` en audio_registry.lua — esta versión
+--       del motor no expone sound.get_length, GOTCHA #17) y comienza la
+--       siguiente, en bucle. Suena siempre "mientras no haya una orden
+--       específica".
+--     • 🎯 EVENTOS (pila LIFO): play_event{ id } empuja un sonido que se
+--       reproduce en bucle mientras su sistema esté activo; stop_event
+--       lo retira. Al vaciarse la pila, la playlist se reanuda en la
+--       pista SIGUIENTE a la interrumpida (no se repite).
+--       Emisores: player (muerte), dialogue_manager (quiz), library.gui
+--       (libro), pause.gui (pausa) y spawn_enemies (fight: oleada viva — ver
+--       main/spawn_enemies.script, el sondeo vive en level_01 donde
+--       enemy_state es fiable). Las zonas (zone_*) ya no emiten música:
+--       storage_1 es pista regular de la playlist (Ago 2026).
+--     • 🎬 INTRO: compat con el mensaje legacy play_ambient (pista única
+--       + loop opcional), usado por intro/intro_animation.script.
+--     • 🔊 Volumen/mute persistente en game_state (sin cambios).
+--
+--   Mensajes entrantes:
+--     start_playlist        → arranca la playlist global (level_01 cargada)
+--     stop_playlist         → detiene la playlist (intro cargada)
+--     play_event { id }     → empuja evento (loop=1, idempotente)
+--     stop_event { id }     → retira evento (idempotente)
+--     play_ambient { sound_url, loop }  → legacy intro (pista única)
+--     set_volume → volumen (sin cambios; pause.gui lee game_state directamente)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+local registry = require "main.audio_registry"
+
+-- 🔧 DEBUG [AUDIO]: cambiar a true para activar los logs del gestor de audio.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_AUDIO = false
+local dprint = config.make_log(DEBUG_AUDIO)
+
+-- ═══════════════════════════════════════════════════════
+-- 🔧 CONSTANTES
+-- ═══════════════════════════════════════════════════════
+
+local FADE_DURATION = 0.2   -- Duración del fade entre pistas
+local FADE_STEPS = 4        -- Pasos para el fade manual
+-- Fallback si una pista del registro no declara `dur` (o vale 0):
+-- avanza igualmente con este valor por defecto.
+-- ⚠️ GOTCHA #17: esta versión del motor NO tiene sound.get_length en
+-- runtime, así que la duración de cada pista es un dato estático en
+-- main/audio_registry.lua (medido con ffprobe sobre los .ogg).
+local DEFAULT_TRACK_DURATION = 30
+-- ═══════════════════════════════════════════════════════
+-- 🎛️ FUNCIONES DE VOLUMEN
+-- ═══════════════════════════════════════════════════════
+
+local function get_effective_gain()
+	local volume = game_state.get_global("audio_volume") or 1.0
+	local enabled = game_state.get_global("audio_enabled")
+	if enabled == false then return 0 end
+	return volume
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔄 FUNCIONES DE FADE
+-- ═══════════════════════════════════════════════════════
+
+-- Fade out progresivo y stop al final
+local function fade_out_and_stop(url, start_gain)
+	if not url then return end
+	local steps = FADE_STEPS
+	local step_time = FADE_DURATION / steps
+	local step_gain = (start_gain or get_effective_gain()) / steps
+	local current_step = 0
+
+	local function do_step()
+		current_step = current_step + 1
+		if current_step >= steps then
+			sound.stop(url)
+			return
+		end
+		local new_gain = math.max(0, (start_gain or 0) - step_gain * current_step)
+		sound.set_gain(url, new_gain)
+		timer.delay(step_time, false, do_step)
+	end
+	do_step()
+end
+
+-- Fade in desde 0 hasta target_gain
+-- loop: 1 → la pista se reproduce en bucle infinito; 0/nil → reproducción única
+local function fade_in_from_zero(url, target_gain, set_final_gain_cb, loop)
+	if not url then return end
+	local steps = FADE_STEPS
+	local step_time = FADE_DURATION / steps
+	local step_gain = target_gain / steps
+	local current_step = 0
+
+	sound.set_gain(url, 0)
+	sound.play(url, { loop = (loop == 1) and 1 or 0 })
+
+	local function do_step()
+		current_step = current_step + 1
+		local new_gain = step_gain * current_step
+		sound.set_gain(url, new_gain)
+		if current_step >= steps then
+			if set_final_gain_cb then
+				set_final_gain_cb(target_gain)
+			end
+			return
+		end
+		timer.delay(step_time, false, do_step)
+	end
+	do_step()
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎵 NÚCLEO: REPRODUCCIÓN / PLAYLIST
+-- ═══════════════════════════════════════════════════════
+
+local function cancel_playlist_timer(self)
+	if self.playlist_timer then
+		timer.cancel(self.playlist_timer)
+		self.playlist_timer = nil
+	end
+end
+
+-- Detiene el sonido actual con fade out
+local function stop_current(self)
+	if not self.current_ambient then return end
+	local url = self.current_ambient
+	local gain = self.current_ambient_gain or get_effective_gain()
+	self.current_ambient = nil
+	self.current_ambient_gain = nil
+	self.current_ambient_loop = 0
+	fade_out_and_stop(url, gain)
+end
+
+-- Reproduce una pista: detiene la actual (fade out) y hace fade in de la
+-- nueva. Si es el MISMO url, se reinicia sin doble fade (la pista ya está
+-- sonando; solo cambia el modo de loop, p. ej. intro loop → playlist one-shot).
+local function play_track(self, url, loop)
+	if not url then return end
+	if url == self.current_ambient then
+		sound.stop(url)
+	else
+		stop_current(self)
+	end
+	local target_gain = get_effective_gain()
+	self.current_ambient = url
+	self.current_ambient_loop = (loop == 1) and 1 or 0
+	self.current_ambient_gain = 0
+	fade_in_from_zero(url, target_gain, function(final_gain)
+		self.current_ambient_gain = final_gain
+	end, self.current_ambient_loop)
+	dprint("[AudioManager] 🎵 Reproduciendo: '" .. tostring(url) .. "' (loop=" .. self.current_ambient_loop .. ", target=" .. target_gain .. ")")
+end
+
+-- ⚠️ GOTCHA #1: advance_playlist está definida MÁS ABAJO pero es llamada
+-- desde el closure del timer de schedule_advance (definida antes). Forward
+-- declaration: el closure la captura como upvalue y la definición posterior
+-- (advance_playlist = function) asigna al local. Sin esto, el closure
+-- resolvería 'advance_playlist' como GLOBAL nil → ERROR al expirar el timer.
+local advance_playlist
+
+-- Programa el avance automático de la playlist (solo en modo playlist y
+-- sin eventos activos: un evento cancela el avance y lo retoma al salir).
+local function schedule_advance(self)
+	cancel_playlist_timer(self)
+	if self.mode ~= "playlist" or #self.event_stack > 0 then return end
+	local track = registry.PLAYLIST[self.playlist_index]
+	if not track then return end
+	local dur = track.dur or DEFAULT_TRACK_DURATION
+	if dur <= 0 then dur = DEFAULT_TRACK_DURATION end
+	self.playlist_timer = timer.delay(dur, false, function()
+		self.playlist_timer = nil
+		advance_playlist(self)
+	end)
+	dprint("[AudioManager] ⏭ Playlist pista " .. self.playlist_index .. "/" .. #registry.PLAYLIST
+		.. " ('" .. track.id .. "') — próxima en " .. string.format("%.1f", dur) .. "s")
+end
+
+-- Avanza a la siguiente pista de la playlist (vuelve a la 1 al final)
+advance_playlist = function(self)
+	if self.mode ~= "playlist" then return end
+	if #self.event_stack > 0 then return end
+	self.playlist_index = self.playlist_index + 1
+	if self.playlist_index > #registry.PLAYLIST then
+		self.playlist_index = 1
+	end
+	local track = registry.PLAYLIST[self.playlist_index]
+	if track then
+		play_track(self, track.url, 0)
+		schedule_advance(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 EVENTOS (pila LIFO)
+-- ═══════════════════════════════════════════════════════
+
+local function handle_play_event(self, message)
+	local id = message.id
+	if not id then return end
+
+	-- 🛡️ Idempotente: si el evento ya está en la pila, no reiniciar la pista
+	for _, existing in ipairs(self.event_stack) do
+		if existing == id then return end
+	end
+
+	local url = registry.EVENTS[id]
+	if not url then
+		dprint("[AudioManager] ⚠️ Evento desconocido: '" .. tostring(id) .. "' (¿añadirlo a audio_registry.lua?)")
+		return
+	end
+
+	local first = #self.event_stack == 0
+	table.insert(self.event_stack, id)
+
+	if first then
+		-- Primer evento: cancelar el avance de playlist y recordar DÓNDE
+		-- reanudar. Por decisión de diseño, la playlist continúa en la
+		-- pista SIGUIENTE a la interrumpida (no se repite la pista cortada).
+		cancel_playlist_timer(self)
+		if self.mode == "playlist" then
+			local next_idx = self.playlist_index + 1
+			if next_idx > #registry.PLAYLIST then next_idx = 1 end
+			self.resume_index = next_idx
+		elseif self.mode == "intro" then
+			self.resume_url = self.current_ambient
+			self.resume_loop = self.current_ambient_loop or 0
+		end
+	end
+
+	play_track(self, url, 1)
+	dprint("[AudioManager] 🎯 Evento activo: '" .. tostring(id) .. "' (pila=" .. #self.event_stack .. ")")
+end
+
+local function handle_stop_event(self, message)
+	local id = message.id
+	if not id then return end
+
+	-- Buscar el evento en la pila (puede no ser el tope)
+	local idx
+	for i, existing in ipairs(self.event_stack) do
+		if existing == id then
+			idx = i
+			break
+		end
+	end
+	if not idx then return end -- 🛡️ Idempotente: no estaba activo
+
+	local was_top = (idx == #self.event_stack)
+	table.remove(self.event_stack, idx)
+
+	-- Quedan eventos en la pila: solo hay que reanudar el nuevo tope
+	-- si el evento retirado era el que estaba sonando.
+	if #self.event_stack > 0 then
+		if was_top then
+			local top = self.event_stack[#self.event_stack]
+			local url = registry.EVENTS[top]
+			if url then play_track(self, url, 1) end
+		end
+		dprint("[AudioManager] ⏹ Fin de evento '" .. tostring(id) .. "' → tope: '" .. tostring(self.event_stack[#self.event_stack]) .. "'")
+		return
+	end
+
+	-- Pila vacía: reanudar lo que había debajo
+	local resumed = false
+	if self.mode == "playlist" and self.resume_index then
+		self.playlist_index = self.resume_index
+		self.resume_index = nil
+		local track = registry.PLAYLIST[self.playlist_index]
+		if track then
+			play_track(self, track.url, 0)
+			schedule_advance(self)
+			resumed = true
+		end
+	elseif self.mode == "intro" and self.resume_url then
+		play_track(self, self.resume_url, self.resume_loop or 0)
+		self.resume_url = nil
+		resumed = true
+	end
+	if not resumed then
+		stop_current(self)
+	end
+	dprint("[AudioManager] ⏹ Fin de evento '" .. tostring(id) .. "' → playlist reanudada (pista " .. self.playlist_index .. ")")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎬 PLAYLIST GLOBAL / INTRO LEGACY
+-- ═══════════════════════════════════════════════════════
+
+-- ⚠️ GOTCHA #1: handle_start_playlist llama a apply_sfx_volume, definida
+-- MÁS ABAJO en la sección de volumen. Forward declaration: sin esto, la
+-- llamada resolvería apply_sfx_volume como GLOBAL nil → ERROR en runtime.
+-- (Mismo patrón que advance_playlist.)
+local apply_sfx_volume
+
+local function handle_start_playlist(self)
+	cancel_playlist_timer(self)
+	self.event_stack = {}
+	self.resume_index = nil
+	self.resume_url = nil
+	self.mode = "playlist"
+	self.playlist_index = 1
+
+	-- 🎛️ Re-aplicar el volumen de efectos: level_01 ya está cargada aquí,
+	-- así que los grupos de sonido existen (en init() aún no). Cubre el
+	-- arranque normal sin depender de abrir el menú de pausa.
+	apply_sfx_volume(game_state.get_global("sfx_volume") or 1.0)
+
+	local track = registry.PLAYLIST[1]
+	if track then
+		play_track(self, track.url, 0)
+		schedule_advance(self)
+	end
+	dprint("[AudioManager] 🎶 Playlist global iniciada (" .. #registry.PLAYLIST .. " pistas)")
+end
+
+local function handle_stop_playlist(self)
+	cancel_playlist_timer(self)
+	self.event_stack = {}
+	self.resume_index = nil
+	self.resume_url = nil
+	self.mode = nil
+	stop_current(self)
+	dprint("[AudioManager] 🛑 Playlist detenida")
+end
+
+-- Legacy (intro): pista única, con loop opcional. Se usa desde
+-- intro/intro_animation.script (start_1 y calm_1 en loop durante el menú).
+local function handle_play_ambient(self, message)
+	cancel_playlist_timer(self)
+	self.event_stack = {}
+	self.resume_index = nil
+	self.resume_url = nil
+	self.mode = "intro"
+	local url = message.sound_url
+	if url then
+		play_track(self, url, message.loop or 0)
+	end
+	dprint("[AudioManager] 🎬 Intro: '" .. tostring(message.prefix or "?") .. "' (loop=" .. tostring(message.loop or 0) .. ")")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔇 TOGGLE DE AUDIO / VOLUMEN
+-- ═══════════════════════════════════════════════════════
+
+local function apply_volume_to_current(self)
+	local gain = get_effective_gain()
+	local active_sound = self.current_ambient
+	local prev_gain = self.current_ambient_gain or 0
+
+	if active_sound then
+		if gain > 0 then
+			sound.set_gain(active_sound, gain)
+			-- Solo play si el sonido estaba detenido (se reanuda del mute)
+			if prev_gain == 0 then
+				sound.play(active_sound, { loop = self.current_ambient_loop or 0 })
+			end
+		else
+			sound.stop(active_sound)
+		end
+		self.current_ambient_gain = gain
+	end
+end
+
+local function handle_set_volume(self, message)
+	local volume = math.max(0, math.min(1, message.volume or 1.0))
+	game_state.set_global("audio_volume", volume)
+	game_state.set_global("audio_enabled", volume > 0)
+	apply_volume_to_current(self)
+end
+
+-- 🎛️ EFECTOS (grupo de sonido "sfx"): el gain del grupo multiplica el de
+-- cada voz (mecanismo nativo del mezclador: componente × play × grupo ×
+-- master), así que un solo set_group_gain controla TODOS los efectos
+-- (pasos, spray, gato, puertas, voces...) sin tocar sus sound.play().
+-- Guard con type() (GOTCHA #17): si esta versión del motor no expusiera
+-- la API, el slider deja de funcionar pero nada se rompe.
+local SFX_GROUP = hash("sfx")
+
+-- El grupo "sfx" se crea automáticamente al cargarse el primer componente
+-- .sound con esa etiqueta (NO se declara en game.project). Si aún no existe
+-- (p. ej. en init, antes de cargar el nivel), set_group_gain daría warning
+-- "Failed to set group gain (-13)". Comprobar existencia evita el ruido.
+local function group_exists(group_hash)
+	if type(sound.get_groups) ~= "function" then return true end
+	for _, g in ipairs(sound.get_groups()) do
+		if g == group_hash then return true end
+	end
+	return false
+end
+
+apply_sfx_volume = function(volume)
+	if type(sound.set_group_gain) == "function" and group_exists(SFX_GROUP) then
+		sound.set_group_gain(SFX_GROUP, volume)
+	end
+end
+
+local function handle_set_sfx_volume(self, message)
+	local sfx_vol = math.max(0, math.min(1, message.volume or 1.0))
+	game_state.set_global("sfx_volume", sfx_vol)
+	apply_sfx_volume(sfx_vol)
+	dprint("[AudioManager] Volumen de efectos: " .. math.floor(sfx_vol * 100) .. "%")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DEL SCRIPT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.mode = nil              -- nil | "playlist" | "intro"
+	self.event_stack = {}
+	self.resume_index = nil
+	self.resume_url = nil
+	self.resume_loop = 0
+	self.current_ambient = nil
+	self.current_ambient_gain = nil
+	self.current_ambient_loop = 0
+	self.playlist_index = 1
+	self.playlist_timer = nil
+
+	-- 🎛️ Re-aplicar el volumen de efectos guardado (el gain de grupo no
+	-- persiste entre sesiones; sfx_volume vive en game_state/savegame).
+	apply_sfx_volume(game_state.get_global("sfx_volume") or 1.0)
+
+	dprint("[AudioManager] Inicializado. Volumen: " .. tostring(game_state.get_global("audio_volume") or 1.0))
+end
+
+function on_message(self, message_id, message, sender)
+
+	if message_id == hash("play_event") then
+		handle_play_event(self, message)
+
+	elseif message_id == hash("stop_event") then
+		handle_stop_event(self, message)
+
+	elseif message_id == hash("start_playlist") then
+		handle_start_playlist(self)
+
+	elseif message_id == hash("stop_playlist") then
+		handle_stop_playlist(self)
+
+	-- 🎬 Legacy intro (intro_animation.script): pista única + loop opcional
+	elseif message_id == hash("play_ambient") then
+		handle_play_ambient(self, message)
+
+	-- 🔇 Control de volumen (menú de pausa)
+	elseif message_id == hash("set_volume") then
+		handle_set_volume(self, message)
+
+	-- 🎛️ Control del volumen de efectos (menú de pausa)
+	elseif message_id == hash("set_sfx_volume") then
+		handle_set_sfx_volume(self, message)
+
+	end
+end
+
+function final(self)
+	cancel_playlist_timer(self)
+
+	-- 🔇 Detener el sonido ambiente actual si está sonando
+	if self.current_ambient then
+		local url = self.current_ambient
+		self.current_ambient = nil
+		self.current_ambient_gain = nil
+		pcall(function() sound.stop(url) end)
+		dprint("[AudioManager] Ambiente detenido en final(): " .. tostring(url))
+	end
+end

@@ -1,0 +1,284 @@
+-- gui/victory.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 🏆 PANTALLA DE VICTORIA (fin de juego)
+-- ═══════════════════════════════════════════════════════
+--
+--   Se muestra al completar las 4 tareas (rango máximo = director). Lo
+--   lanza game_state.evaluate_tasks() vía el listener registrado con
+--   game_state.on_victory().
+--
+--   Alojada en bootstrap (GO propio gui_victory) para funcionar con el nivel
+--   congelado — mismo patrón que pause.gui (bootstrap sobrevive a la pausa
+--   del proxy level_01 vía set_time_step factor=0).
+--
+--   Al mostrarse:
+--     1. Pausa el nivel (scene_manager pause_game)
+--     2. Muestra game_over_victory + rango final
+--     3. Dispara el baile de victoria (flipbook GUI en loop)
+--   Botón "Nueva partida": deshace la pausa, resetea el progreso
+--   (game_state.reset_all) y vuelve a la intro.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua)
+local DEBUG_VICTORY = false
+local dprint = config.make_log(DEBUG_VICTORY)
+
+local SCENE_MANAGER_URL = "bootstrap:/main_loader#scene_manager"
+local AUDIO_MANAGER_URL = "bootstrap:/audio_manager#manager"
+
+-- 🏆 URL absoluta del PROPIO componente (bootstrap.collection → gui_victory#victory):
+-- el listener de victoria se invoca desde el contexto de scene_manager (un
+-- .script), y ahí msg.post(".") se resolvería a la URL de scene_manager, no a
+-- este gui — el mensaje se perdería. Con URL absoluta es inmune al contexto.
+local VICTORY_GUI_URL = "bootstrap:/gui_victory#victory"
+
+-- 🎬 Animación del baile de victoria (player.atlas, flipbook en loop). Pre-hash
+-- de archivo (regla §2 DEFOLD_LUA_STANDARDS.md): nunca hash() en runtime.
+local ANIM_VICTORY_DANCE = hash("victory_dance_end_game")
+
+-- 🎬 BAILE DE VICTORIA (flipbook GUI): el nodo box_animation_dance_end_game
+-- de victory.gui reproduce 'victory_dance_end_game' en loop (player.atlas).
+-- Es un nodo GUI (no un GO externo) → funciona con el nivel congelado,
+-- porque la GUI de bootstrap vive fuera del set_time_step factor=0.
+
+-- 🖱️ Sonido de clic de botón (mouse-click.sound, grupo "sfx" → respeta el
+-- slider de efectos del audio_manager). Componente montado en el GO
+-- gui_victory (bootstrap.collection), mismo patrón que la intro
+-- (gui_intro#mouse_click). ⚠️ En un .gui_script NO se usa go.*; si el
+-- componente faltara, sound.play solo loguea un warning y no rompe.
+local function play_click_sound()
+	sound.play("#mouse_click")
+end
+
+-- 🖱️ Parámetros de hover animado del botón "Nueva partida" (espejo de la
+-- intro: multiplicador de escala + tinte de color, EASING_OUTQUAD).
+local HOVER_SCALE_FACTOR = 1.08
+local HOVER_TINT         = 0.35
+local HOVER_DURATION     = 0.12
+
+-- Anima escala + color del botón según hover (patrón intro animate_hover)
+local function animate_hover(self, hovering)
+	local node = self.btn_new_game
+	if not node then return end
+	gui.cancel_animations(node, gui.PROP_SCALE)
+	gui.cancel_animations(node, gui.PROP_COLOR)
+	if hovering then
+		gui.animate(node, gui.PROP_SCALE,
+			vmath.vector3(HOVER_SCALE_FACTOR, HOVER_SCALE_FACTOR, 1.0),
+			gui.EASING_OUTQUAD, HOVER_DURATION)
+		gui.animate(node, gui.PROP_COLOR, self.btn_hover_color, gui.EASING_OUTQUAD, HOVER_DURATION)
+	else
+		gui.animate(node, gui.PROP_SCALE, vmath.vector3(1.0, 1.0, 1.0), gui.EASING_OUTQUAD, HOVER_DURATION)
+		gui.animate(node, gui.PROP_COLOR, self.btn_orig_color, gui.EASING_OUTQUAD, HOVER_DURATION)
+	end
+end
+
+-- Restablece el estado visual del botón (evita que una escala/color de hover
+-- anterior quede congelado al re-mostrar la pantalla)
+local function reset_button(self)
+	self.btn_hover = false
+	if self.btn_new_game then
+		gui.cancel_animations(self.btn_new_game, gui.PROP_SCALE)
+		gui.cancel_animations(self.btn_new_game, gui.PROP_COLOR)
+		gui.set_scale(self.btn_new_game, vmath.vector3(1.0, 1.0, 1.0))
+		gui.set_color(self.btn_new_game, self.btn_orig_color)
+	end
+end
+
+-- ============================================
+-- LÓGICA DE VICTORIA
+-- ============================================
+
+-- 🔧 GOTCHA #19 (DEV_GOTCHAS.md): los nodos sin campo `visible` nacen
+-- VISIBLES por defecto, y los hijos NO se esconden con su padre a menos que
+-- se deshabiliten explícitamente (o se anide). Los textos y el botón son
+-- nodos raíz independientes en victory.gui → hay que deshabilitarlos TODOS
+-- (patrón de pause.gui_script), no solo el contenedor.
+local function set_visible(self, visible)
+	for _, node in ipairs(self.nodes) do
+		gui.set_enabled(node, visible)
+	end
+end
+
+local function start_new_game(self)
+	self.is_visible = false
+	set_visible(self, false)
+	reset_button(self)
+	msg.post(".", "release_input_focus")
+
+	-- 🎵 Cortar el jingle de victoria AL INSTANTE (bug Ago 2026: al pulsar
+	-- "Nueva partida" seguía sonando). El componente vive en el GO gui_victory
+	-- (bootstrap, nunca se descarga) → el cambio de escena no lo corta por sí
+	-- solo; hay que pararlo explícitamente. sound.stop es idempotente.
+	sound.stop("#end_game_victory")
+
+	-- 🕹️ Deshacer la pausa del nivel ANTES de salir (paused_count → 0); sin
+	-- esto, el nivel quedaría congelado en la siguiente partida (is_paused).
+	msg.post(SCENE_MANAGER_URL, "resume_game")
+
+	-- 🔄 Resetear progreso (y habilitar la victoria de nuevo) + volver a la intro
+	game_state.reset_all()
+	msg.post(SCENE_MANAGER_URL, "goto_intro")
+	dprint("[Victory] Nueva partida — progreso reiniciado, volviendo a la intro")
+end
+
+local function show_victory(self)
+	if self.is_visible then return end
+	self.is_visible = true
+
+	-- 🌐 Textos al idioma actual (game_state ya está cargado cuando se dispara)
+	local lang = text_loader.get_current_lang()
+	local general = text_loader.load("general", lang) or {}
+
+	local victory_text = (general.dialogs and general.dialogs.game_over_victory)
+		or "Has demostrado ser un excepcional conservador de museo."
+	local rank = tonumber(game_state.get_global("skills") or 1)
+	-- 🏅 Fallback NEUTRO (GOTCHA #20/37): si falta la traducción del rango en
+	-- general_text → ranks, mostrar el número sin etiqueta en español.
+	local rank_name = (general.ranks and general.ranks[rank]) or tostring(rank)
+	local rank_label = (general.dialogs and general.dialogs.victory_rank_label)
+		or "Rango final: %s"
+	local btn_text = (general.ui and general.ui.btn_new_game) or "Nueva Partida"
+
+	gui.set_text(gui.get_node("text_victory"), victory_text)
+	gui.set_text(gui.get_node("text_victory_rank"), string.format(rank_label, rank_name))
+	gui.set_text(gui.get_node("text_btn_new_game"), btn_text)
+
+	-- ⏸️ Pausar el nivel principal (set_time_step factor=0 vía scene_manager)
+	msg.post(SCENE_MANAGER_URL, "pause_game")
+
+	set_visible(self, true)
+	reset_button(self)
+
+	-- 🎬 Baile de victoria: lanzar el flipbook desde el frame 1 en cada muestra
+	-- (también tras "Nueva partida"). El nodo trae la animación en loop desde
+	-- el editor; play_flipbook garantiza el reinicio explícito (patrón de
+	-- exhibition.gui_script / library.gui_script).
+	if self.box_animation_dance then
+		gui.play_flipbook(self.box_animation_dance, ANIM_VICTORY_DANCE, gui.PLAYBACK_LOOP_FORWARD)
+	end
+
+	-- 🛑 Silenciar la playlist de fondo para que el jingle quede limpio:
+	-- stop_playlist detiene la pista actual Y vacía la pila de eventos (fight,
+	-- quiz...). Es terminal — la siguiente partida la re-arranca start_playlist
+	-- al cargar level_01 (y la intro re-envía stop_playlist, idempotente).
+	msg.post(AUDIO_MANAGER_URL, "stop_playlist")
+
+	-- 🎵 Jingle de victoria (end_game_victory.sound, grupo "music", loop:false):
+	-- suena UNA vez al mostrar la GUI. Componente montado en el GO gui_victory
+	-- (bootstrap.collection) → funciona con el nivel congelado (el audio_manager
+	-- y este GO viven en bootstrap, fuera del set_time_step). El audio_manager
+	-- solo ajusta el gain del grupo sfx y de la pista de playlist activa, así
+	-- que el jingle (grupo music) suena a su propio gain, siempre audible.
+	sound.play("#end_game_victory")
+
+	msg.post(".", "acquire_input_focus")
+
+	dprint("[Victory] 🏆 ¡Victoria! Mostrando pantalla de fin de juego (rango " .. rank .. ")")
+end
+
+-- ============================================
+-- LIFECYCLE
+-- ============================================
+
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima): victoria=6
+	-- sobre web_controls=5, pause=4, library=3, exhibition=2, interactive=1, hud=0
+	gui.set_render_order(6)
+
+	-- Referencias a TODOS los nodos raíz (los textos y el botón son nodos
+	-- independientes en el .gui, no hijos de box_victory)
+	self.nodes = {
+		gui.get_node("box_victory"),
+		gui.get_node("text_victory"),
+		gui.get_node("text_victory_rank"),
+		gui.get_node("btn_new_game"),
+		gui.get_node("text_btn_new_game"),
+		gui.get_node("box_animation_dance_end_game"),  -- 🎬 baile de victoria
+	}
+
+	-- 🖱️ Botón "Nueva partida": colores base/hover cacheados (patrón intro:
+	-- tinte +0.35 clampeado a 1.0). Las propiedades se leen aunque el nodo
+	-- esté deshabilitado.
+	self.btn_new_game = gui.get_node("btn_new_game")
+
+	-- 🎬 Baile de victoria (flipbook GUI): se oculta/muestra con el resto de
+	-- nodos (set_visible) y se lanza con play_flipbook en show_victory.
+	self.box_animation_dance = gui.get_node("box_animation_dance_end_game")
+
+	local orig = gui.get_color(self.btn_new_game)
+	self.btn_orig_color = orig
+	self.btn_hover_color = vmath.vector4(
+		math.min(orig.x + HOVER_TINT, 1.0),
+		math.min(orig.y + HOVER_TINT, 1.0),
+		math.min(orig.z + HOVER_TINT, 1.0),
+		orig.w
+	)
+	self.btn_hover = false
+
+	self.is_visible = false
+	-- 🔧 GOTCHA #19: ocultar TODOS los nodos raíz en init (nacen visibles)
+	set_visible(self, false)
+
+	-- 🏆 Suscribirse a la victoria (game_state es módulo persistente; el
+	-- listener se registra UNA vez por sesión — bootstrap no se recarga).
+	-- ⚠️ GOTCHA (Ago 2026): el listener lo invoca game_state.evaluate_tasks()
+	-- desde el contexto de scene_manager (un .script). Llamar gui.* ahí lanza
+	-- "You can only access gui.* functions and values from a gui script
+	-- instance". Por eso el callback SOLO reenvía con msg.post al propio
+	-- componente y el trabajo gui.* se hace en on_message (contexto
+	-- gui_script correcto) — patrón estándar Defold para GUI entre contextos.
+	game_state.on_victory(function()
+		-- ⚠️ URL ABSOLUTA (no "."): el callback corre en el contexto de
+		-- scene_manager y "." resolvería a su URL — el mensaje se perdería.
+		msg.post(VICTORY_GUI_URL, "show_victory")
+	end)
+
+	dprint("[Victory] GUI inicializada — listener de victoria registrado")
+end
+
+function on_message(self, message_id, message)
+	if message_id == hash("show_victory") then
+		show_victory(self)
+	end
+end
+
+function final(self)
+	if self.is_visible then
+		msg.post(".", "release_input_focus")
+	end
+end
+
+-- ============================================
+-- INPUT
+-- ============================================
+
+function on_input(self, action_id, action)
+	if not self.is_visible then return end
+
+	-- 🖱️ Hover del botón (mousemove; en táctil no llegan eventos de movimiento)
+	if action_id == nil then
+		local hovering = gui.pick_node(self.btn_new_game, action.x, action.y)
+		if hovering ~= self.btn_hover then
+			self.btn_hover = hovering
+			animate_hover(self, hovering)
+		end
+		return true
+	end
+
+	if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+		if gui.pick_node(self.btn_new_game, action.x, action.y) then
+			play_click_sound()
+			start_new_game(self)
+			return true
+		end
+	end
+end

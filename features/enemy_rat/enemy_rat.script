@@ -1,0 +1,552 @@
+-- features/enemy_rat/enemy_rat.script
+-- ═══════════════════════════════════════════════════════
+-- 🐀 IA DE LA RATA — EMBESTIDA TELEGRAFIADA
+-- ═══════════════════════════════════════════════════════
+--
+--   Distinta de la cucaracha (persecución + picoteo constante): la rata es
+--   un enemigo BURST. Su amenaza es la embestida, que se puede esquivar.
+--
+--   Máquina de estados:
+--     APPROACH → WINDUP → CHARGE → RECOVERY → APPROACH (loop)
+--                     ↘                      ↗
+--                       (death en cualquier estado)
+--
+--   • APPROACH : se acerca al jugador a `speed` normal (sin sonido walk:
+--                el GO de la rata no tiene componente walk — se acerca en
+--                silencio, más tensión) hasta `charge_range`.
+--   • WINDUP   : se detiene, suena `rat_squeak` y reproduce la animación
+--                `attack` en bucle (AMAGO / telegrafiado). El jugador ve y
+--                oye que va a embestir. 🔒 Aquí se CONGELA el objetivo
+--                (`self.charge_target`): la posición del jugador en este
+--                instante.
+--   • CHARGE   : embiste en línea recta a `charge_speed` hacia el punto
+--                lockeado al INICIO del amago. ⚠️ NO se re-apunta → si el
+--                jugador se mueve durante el amago (en pasillos estrechos
+--                basta con avanzar/retroceder, no hace falta espacio
+--                lateral), la rata embiste hacia donde ya no está.
+--                Esquivable por diseño (decisión Ago 2026: los pasillos del
+--                museo no permiten esquivar lateralmente).
+--                Reglas de esquiva: retroceder / moverse durante el amago =
+--                esquiva; quedarse quieto = impacto; avanzar hacia la rata
+--                durante el amago = impactarse contra la embestida (justo);
+--                jugador acorralado al fondo de un pasillo = castigado (justo).
+--                El daño SOLO se aplica durante la embestida (la amenaza es
+--                la carga; rozar a la rata al caminar no hace daño).
+--   • RECOVERY : al llegar al punto, chocar contra un muro (crash) o agotar
+--                `charge_max_duration`, queda aturdida (vulnerable al spray).
+--
+--   ⚙️ CONFIGURABLE DESDE EL EDITOR (go.property):
+--     • speed               → velocidad de aproximación (default 50)
+--     • damage              → daño de la embestida (default 35 vs 20 cucaracha) 🎯
+--     • health              → vida (default 3 vs 1 cucaracha: 3 sprays)
+--     • charge_range        → distancia a la que inicia el amago (260)
+--     • windup_duration     → duración del amago en segundos (0.6)
+--     • charge_speed        → velocidad de la embestida (default 100 px/s)
+--     • charge_max_duration → tope de duración de la embestida (2.6 s = 260 px
+--       a charge_speed 100: suficiente para cubrir charge_range)
+--     • recovery_duration   → aturdimiento tras embestir (1.2 s)
+--
+--   📝 Notas de diseño:
+--     • La rata SÍ incrementa `task_bugs_total` al morir (mismo contador de
+--       control de plagas que la cucaracha).
+--     • El daño solo durante CHARGE se controla con `charge_hit_done` (la
+--       contact_point_response se recibe cada frame mientras hay contacto).
+--     • Audio por proximidad igual que la cucaracha (gain + pan estéreo).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require("main.game_state")
+local config = require "main.config"
+local enemy_state = require "main.enemy_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua): true = loguea
+--    cuando M.DEBUG esté activo; false = silenciado (por defecto)
+local DEBUG_RAT = false
+local dprint = config.make_log(DEBUG_RAT)
+
+-- 🐱 Registro en enemy_state (Ago 2026): el propio enemigo se registra en su
+--    init() con go.get_id(). Así quedan registrados TANTO los creados por
+--    factory (spawn_enemies) COMO los estáticos colocados en el editor. El
+--    spawner ya no registra (evita ids duplicados). Ver enemy_state.lua.
+
+-- Definición de Estados de la IA
+local STATE_APPROACH = "APPROACH"
+local STATE_WINDUP   = "WINDUP"
+local STATE_CHARGE   = "CHARGE"
+local STATE_RECOVERY = "RECOVERY"
+local STATE_DEATH    = "DEATH"
+
+-- Variables configurables expuestas en el editor de Defold
+go.property("speed", 50)                -- Velocidad de aproximación
+go.property("damage", 35)               -- 🎯 Daño de la embestida (parametrizable)
+go.property("health", 3)                -- Vida (3 impactos de spray)
+go.property("charge_range", 260)        -- Distancia a la que inicia el amago
+go.property("windup_duration", 0.6)     -- Duración del amago (telegrafiado)
+go.property("charge_speed", 100)        -- Velocidad de la embestida
+go.property("charge_max_duration", 2.6) -- Tope de duración de la embestida (2.6s × 100 = 260 px, cubre charge_range)
+go.property("recovery_duration", 1.2)   -- Aturdimiento tras embestir
+-- 🪺 Solo true en enemigos creados por NIDO (spawn_enemies.script lo pone en
+--    factory.create cuando use_nest_ranges): habilita el despawn por distancia
+--    si el jugador se aleja sin interactuar (Ago 2026). Los estáticos del
+--    editor y los spawners standalone nunca lo tienen (false por defecto).
+go.property("from_nest", false)
+
+-- ═══════════════════════════════════════════════════════
+-- 🎵 AUDIO POR PROXIMIDAD (mismo patrón que la cucaracha)
+-- ═══════════════════════════════════════════════════════
+
+-- Centralizadas en main/config.lua → M.balance (audio de enemigos; mismo
+-- valor que la cucaracha). El `or` conserva el valor si falta la clave.
+-- Nota: la rata NO tiene loop walk (se acerca en silencio por diseño); solo
+-- usa proximidad para los one-shots (squeak, attack, death), cuyo rango
+-- (enemy_sound_one_shot_max = 400) debe cubrir charge_range (260) para que
+-- el telegrafiado del amago se oiga.
+local balance = config.balance or {}
+local PROXIMITY_ONE_SHOT_MAX_DIST = balance.enemy_sound_one_shot_max or 400
+local PROXIMITY_MIN_DIST = balance.enemy_sound_proximity_min or 100
+
+-- 🪺 DESPAWN POR DISTANCIA (enemigos de nido, Ago 2026): si el jugador se aleja
+--    sin interactuar con un enemigo de nido, este desaparece FUERA DE PANTALLA
+--    (400 uds > lo visible a zoom 2.0: ~373 en la esquina, 320 en horizontal)
+--    y el nido lo re-emite al volver (trigger r=50). Solo aplica si
+--    self.from_nest y NO engaged (recibió daño o golpeó al jugador → se queda
+--    hasta morir). El guard de distancia cubre WINDUP/CHARGE (charge_range 260
+--    < 400: nunca se despawna en pleno ataque). Sondeo throttled, distancia²
+--    por componentes (zero-alloc). Configurable en config.balance.nest.
+--    enemy_despawn_distance; si falta la clave, fallback 400 (convención).
+local DESPAWN_POLL = 0.5
+local DESPAWN_DIST = (balance.nest and balance.nest.enemy_despawn_distance) or 400
+local DESPAWN_DIST_SQR = DESPAWN_DIST * DESPAWN_DIST
+
+-- Ajusta gain (volumen) y pan (estéreo) de un componente de sonido
+-- en función de la distancia y posición relativa al jugador.
+-- @param max_dist (number) Distancia a la que el gain llega a 0: la rata
+-- siempre usa PROXIMITY_ONE_SHOT_MAX_DIST (no tiene loop walk).
+local function apply_proximity_audio(sound_url, player_pos, emitter_pos, max_dist)
+	local diff = player_pos - emitter_pos
+	local distance = vmath.length(diff)
+
+	local gain = 0
+	if distance < max_dist then
+		local clamped_dist = math.max(distance, PROXIMITY_MIN_DIST)
+		-- Guarda: si max_dist <= min (error de configuración), evita división
+		-- por 0 / NaN en el denominador.
+		local range = math.max(0.001, max_dist - PROXIMITY_MIN_DIST)
+		gain = 1 - ((clamped_dist - PROXIMITY_MIN_DIST) / range)
+	end
+
+	pcall(function()
+		msg.post(sound_url, "set_gain", { gain = gain })
+	end)
+
+	local pan = 0
+	if distance > 0 then
+		local dir_x = diff.x / distance
+		pan = math.max(-1.0, math.min(1.0, dir_x))
+	end
+
+	pcall(function()
+		msg.post(sound_url, "set_pan", { pan = pan })
+	end)
+end
+
+-- Audio helpers (seguros ante go.delete / instancias)
+local function safe_sound_play(url)
+	pcall(function() sound.play(url) end)
+end
+
+local function safe_sound_stop(url)
+	pcall(function() sound.stop(url) end)
+end
+
+local function stop_all_enemy_sounds(self)
+	if not self.sound_urls_list then return end
+	for _, u in ipairs(self.sound_urls_list) do
+		safe_sound_stop(u)
+	end
+end
+
+-- Función auxiliar para orientar el GO hacia su dirección de movimiento en 2D.
+-- 🧭 ORIENTACIÓN VERIFICADA (Ago 2026): el arte de la rata mira al SUR
+-- (cabeza abajo, cola arriba) y el sprite en enemy_rat.go NO tiene rotación
+-- horneada (eliminada en el editor) → el sprite muestra el arte tal cual.
+-- Para que la cabeza apunte en la dirección de movimiento θ:
+--     cabeza_mundo = −90° (arte sur) + rotación_GO = θ
+--     → rotación_GO = atan2(dir.y, dir.x) + 90° (π/2)
+-- ⚠️ La cucaracha usa `atan2` plano con su rotación horneada de −90° (arte
+-- norte) — NO copiar el look_at entre enemigos sin verificar arte y rotación
+-- horneada (DEV_GOTCHAS #15).
+-- Zero-garbage (regla §1): muta self.tmp_dir / self.tmp_rot pre-asignados en
+-- init() — no aloca vectores ni quats en update() (a diferencia de la
+-- cucaracha, que sigue alocando).
+local function set_rotation_from_dir(self, dir)
+	local angle = math.atan2(dir.y, dir.x) + math.pi / 2
+	local rot = self.tmp_rot
+	rot.z = math.sin(angle * 0.5)
+	rot.w = math.cos(angle * 0.5)
+	go.set_rotation(rot)
+end
+
+-- Delta hacia un punto objetivo en self.tmp_dir (sin alocar) y orienta.
+local function look_at(self, position, target_position)
+	local dir = self.tmp_dir
+	dir.x = target_position.x - position.x
+	dir.y = target_position.y - position.y
+	dir.z = 0
+	if dir.x ~= 0 or dir.y ~= 0 then
+		set_rotation_from_dir(self, dir)
+	end
+end
+
+-- ============================================
+-- MANEJADORES DE COLISIÓN (extraídos de on_message)
+-- ============================================
+
+-- 💥 Colisión con el jugador: daño SOLO durante la embestida (por diseño).
+--    La contact_point_response llega cada frame mientras hay contacto, así
+--    que `charge_hit_done` limita el daño a UNA aplicación por carga.
+local function handle_player_collision(self, message)
+	if self.state == STATE_CHARGE and not self.charge_hit_done then
+		self.charge_hit_done = true
+
+		-- 🎵 Ajustar audio por proximidad ANTES de reproducir el one-shot
+		apply_proximity_audio(self.sound_urls.attack, self.player_pos, self.my_pos, PROXIMITY_ONE_SHOT_MAX_DIST)
+		safe_sound_play(self.sound_urls.attack)
+
+		-- 🪺 Interacción: la embestida golpeó al jugador → queda "engaged" (ya
+		--    no puede desaparecer por distancia aunque el jugador se aleje).
+		self.engaged = true
+
+		-- Aplicar daño (parametrizable: go.property "damage")
+		local current_health = game_state.get_global("health") or 100
+		local new_health = math.max(0, current_health - self.damage)
+		game_state.set_global("health", new_health)
+
+		-- Notificar al script del jugador
+		msg.post(self.player_url, "taken_damage", { amount = self.damage })
+	end
+end
+
+-- 🧱 Colisión con muros: acumula separación para aplicar consolidado en update().
+--    En APPROACH se añade el esquive lateral (igual que la cucaracha).
+--    En CHARGE la embestida se DETIENE al chocar (crash → RECOVERY).
+local function handle_wall_collision(self, message)
+	local comp = message.normal * message.distance
+	if comp.x > 0 then
+		self.wall_push_pos.x = math.max(self.wall_push_pos.x, comp.x)
+	elseif comp.x < 0 then
+		self.wall_push_neg.x = math.min(self.wall_push_neg.x, comp.x)
+	end
+	if comp.y > 0 then
+		self.wall_push_pos.y = math.max(self.wall_push_pos.y, comp.y)
+	elseif comp.y < 0 then
+		self.wall_push_neg.y = math.min(self.wall_push_neg.y, comp.y)
+	end
+
+	if self.state == STATE_CHARGE then
+		-- 💥 Crash: la embestida se detiene contra el muro
+		self.state = STATE_RECOVERY
+		self.recovery_timer = self.recovery_duration
+		pcall(function() sprite.play_flipbook("#sprite", hash("idle")) end)
+	elseif self.state == STATE_APPROACH then
+		-- Acumular vector de esquive lateral (perpendicular a la normal)
+		local dodge_vector = vmath.vector3(-message.normal.y, message.normal.x, 0) * (self.speed * 0.5) * self.dodge_direction * 0.016
+		self.wall_dodge = self.wall_dodge + dodge_vector
+
+		if math.random() < 0.02 then
+			self.dodge_direction = self.dodge_direction * -1
+		end
+	end
+end
+
+-- 💥 Recibir daño: reduce salud, si llega a 0 → muerte con animación + sonido + limpieza.
+--    Incrementa task_bugs_total (mismo contador de plagas que la cucaracha).
+local function handle_damage(self, message)
+	-- 🪺 Interacción: recibió daño → queda "engaged" (ya no puede desaparecer
+	--    por distancia aunque el jugador se aleje).
+	self.engaged = true
+
+	local dmg_taken = message.amount or 1
+	self.health = self.health - dmg_taken
+
+	if self.health <= 0 then
+		self.state = STATE_DEATH
+
+		-- Parar sonidos persistentes ANTES de borrar
+		stop_all_enemy_sounds(self)
+
+		-- Incrementamos el contador global del museo (mismo contador de plagas
+		-- que la cucaracha)
+		game_state.add_to_global("task_bugs_total", 1)
+
+		-- 🎵 Ajustar audio por proximidad ANTES de reproducir el one-shot
+		apply_proximity_audio(self.sound_urls.death, self.player_pos, self.my_pos, PROXIMITY_ONE_SHOT_MAX_DIST)
+		safe_sound_play(self.sound_urls.death)
+
+		-- Intentamos reproducir la animación de muerte.
+		-- ⚠️ Nota (ver player.script): en esta versión de Defold los callbacks de
+		-- play_flipbook NO son fiables — el borrado real lo garantiza el fallback
+		-- por tiempo (2.0s); el callback es best-effort (patrón de la cucaracha).
+		local anim_success = pcall(function()
+			sprite.play_flipbook("#sprite", hash("death"), function()
+				pcall(function() go.delete() end)
+			end)
+		end)
+
+		if not anim_success then
+			pcall(function() go.delete() end)
+		else
+			-- Fallback por tiempo (mecanismo real de borrado)
+			timer.delay(2.0, false, function()
+				pcall(function() go.delete() end)
+			end)
+		end
+	end
+end
+
+-- ============================================
+-- CICLO DE VIDA
+-- ============================================
+
+function init(self)
+	-- 🐱 Registrarse en enemy_state (auto-aim del spray móvil + gato + sondeo
+	--    de pelea): también cubre los estáticos del editor. El id real es
+	--    go.get_id() (no adivinar nombres, ver enemy_state.lua).
+	enemy_state.register(go.get_id())
+
+	self.state = STATE_APPROACH
+	self.player_url = msg.url("/player") -- URL por defecto del objeto del jugador
+
+	-- 🪺 Despawn por distancia (enemigos de nido): sin interacción al nacer;
+	--    engaged se activa al recibir daño o golpear al jugador (handle_damage
+	--    / handle_player_collision). Sondeo de despawn con cadencia DESPAWN_POLL.
+	self.engaged = false
+	self.despawn_timer = 0
+
+	-- Dirección alternante para esquivar obstáculos de manera aleatoria
+	self.dodge_direction = math.random() > 0.5 and 1 or -1
+
+	-- 🧱 Corrección consolidada de paredes (acumular en on_message, aplicar en update)
+	self.wall_push_pos = vmath.vector3()
+	self.wall_push_neg = vmath.vector3()
+	self.wall_dodge = vmath.vector3()
+
+	-- 🧮 Vectores/quats pre-asignados para update() zero-garbage (regla §1):
+	--    tmp_dir = delta hacia el objetivo · tmp_move = nueva posición ·
+	--    tmp_rot = quat de rotación reutilizado (mutación de quat_rotation_z).
+	self.tmp_dir = vmath.vector3()
+	self.tmp_move = vmath.vector3()
+	self.tmp_rot = vmath.quat_rotation_z(0)
+
+	-- ⚡ Estado de la embestida
+	self.windup_timer = 0
+	self.charge_timer = 0
+	self.recovery_timer = 0
+	self.charge_hit_done = false
+	self.charge_target = nil
+	self.charge_dir = nil
+
+	-- URLs de audio relativas (funcionan en instancias del editor y de factory)
+	self.sound_urls = {
+		squeak = "#rat_squeak",
+		attack = "#rat_attack",
+		death  = "#rat_death",
+	}
+	-- lista para stop masivo seguro
+	self.sound_urls_list = { self.sound_urls.squeak, self.sound_urls.attack, self.sound_urls.death }
+
+	-- Iniciamos la animación por defecto de caminata (sin sonido walk: el GO
+	-- de la rata no tiene componente de caminar → se acerca en silencio)
+	pcall(function()
+		sprite.play_flipbook("#sprite", hash("walk"))
+	end)
+	-- (self.state ya es STATE_APPROACH desde el inicio de init())
+end
+
+function update(self, dt)
+	if self.state == STATE_DEATH then return end
+
+	-- 🧱 Aplicar corrección consolidada de paredes (solo fuera de la embestida:
+	--    durante CHARGE la trayectoria debe ser una línea recta limpia).
+	--    Zero-garbage: suma por componentes en tmp_move y resets por componentes
+	--    (antes: correction = pos+neg + 3× vmath.vector3() alocaban cada frame
+	--    de forma incondicional — corregido en Ago 2026).
+	if self.state ~= STATE_CHARGE then
+		local has_correction = vmath.length_sqr(self.wall_push_pos) > 0
+			or vmath.length_sqr(self.wall_push_neg) > 0
+			or vmath.length_sqr(self.wall_dodge) > 0
+		if has_correction then
+			local pos = go.get_position()
+			local move = self.tmp_move
+			move.x = pos.x + self.wall_push_pos.x + self.wall_push_neg.x + self.wall_dodge.x
+			move.y = pos.y + self.wall_push_pos.y + self.wall_push_neg.y + self.wall_dodge.y
+			move.z = pos.z + self.wall_push_pos.z + self.wall_push_neg.z + self.wall_dodge.z
+			go.set_position(move)
+		end
+		-- Reset por componentes (reutiliza los vectores, no aloca)
+		self.wall_push_pos.x = 0
+		self.wall_push_pos.y = 0
+		self.wall_push_pos.z = 0
+		self.wall_push_neg.x = 0
+		self.wall_push_neg.y = 0
+		self.wall_push_neg.z = 0
+		self.wall_dodge.x = 0
+		self.wall_dodge.y = 0
+		self.wall_dodge.z = 0
+	end
+
+	local my_pos = go.get_position()
+
+	-- Obtención segura de la posición del jugador
+	local player_exists, target_pos = pcall(go.get_position, self.player_url)
+	if not player_exists or not target_pos then
+		-- Si el jugador no existe en la escena actual, detenemos la lógica.
+		return
+	end
+
+	-- Guardar posiciones como instancia para usarlas desde on_message
+	self.my_pos = my_pos
+	self.player_pos = target_pos
+
+	-- 🪺 DESPAWN POR DISTANCIA (enemigos de nido, Ago 2026): solo si
+	--    self.from_nest (flag puesto por spawn_enemies en nidos) y NO engaged
+	--    (sin interacción). Al superar DESPAWN_DIST (400 uds, fuera de pantalla
+	--    a zoom 2.0) se detienen los sonidos (limpieza como handle_damage) y se
+	--    borra el GO: el jugador no ve el borrado, y el nido re-emitirá al
+	--    volver. Sondeo throttled con distancia² por componentes (zero-alloc,
+	--    estándar §2). final() también para sonidos (doble red).
+	self.despawn_timer = self.despawn_timer - dt
+	if self.despawn_timer <= 0 then
+		self.despawn_timer = DESPAWN_POLL
+		if self.from_nest and not self.engaged then
+			local dx = target_pos.x - my_pos.x
+			local dy = target_pos.y - my_pos.y
+			if dx * dx + dy * dy > DESPAWN_DIST_SQR then
+				dprint("[RATA] Despawn por distancia (nido, sin interacción): jugador a >" .. DESPAWN_DIST .. " uds")
+				stop_all_enemy_sounds(self)
+				go.delete()
+				return
+			end
+		end
+	end
+
+	-- ----------------------------------------------------
+	-- ESTADO: APPROACH (persecución al jugador)
+	-- ----------------------------------------------------
+	if self.state == STATE_APPROACH then
+		-- Delta hacia el jugador en el vector pre-asignado (sin alocar)
+		local dir = self.tmp_dir
+		dir.x = target_pos.x - my_pos.x
+		dir.y = target_pos.y - my_pos.y
+		dir.z = 0
+		local dist = vmath.length(dir)
+
+		if dist <= self.charge_range then
+			-- 🎯 Dentro de rango: iniciar el AMAGO (telegrafiado).
+			--    Se congela, suena el squeak y reproduce la animación de
+			--    ataque en bucle. El jugador ve/oye que va a embestir.
+			-- 🔒 LOCK AL INICIO DEL AMAGO: se congela la posición del jugador
+			--    AHORA. La embestida irá a este punto fijo; moviéndose durante
+			--    el amago (incluso solo retrocediendo por el pasillo) la carga
+			--    falla → esquivable sin espacio lateral.
+			self.state = STATE_WINDUP
+			self.windup_timer = self.windup_duration
+			self.charge_target = vmath.vector3(target_pos)
+			apply_proximity_audio(self.sound_urls.squeak, target_pos, my_pos, PROXIMITY_ONE_SHOT_MAX_DIST)
+			safe_sound_play(self.sound_urls.squeak)
+			pcall(function() sprite.play_flipbook("#sprite", hash("attack")) end)
+		elseif dist > 5 then
+			-- Movimiento mutando self.tmp_move (sin alocar); dir/dist = dirección
+			local move = self.tmp_move
+			move.x = my_pos.x + (dir.x / dist) * self.speed * dt
+			move.y = my_pos.y + (dir.y / dist) * self.speed * dt
+			move.z = my_pos.z
+			go.set_position(move)
+			set_rotation_from_dir(self, dir)
+		end
+
+	-- ----------------------------------------------------
+	-- ESTADO: WINDUP (amago: quieta, esperando el lanzamiento)
+	-- ----------------------------------------------------
+	elseif self.state == STATE_WINDUP then
+		self.windup_timer = self.windup_timer - dt
+		if self.windup_timer <= 0 then
+			-- 🚀 LANZAMIENTO: la embestida se dirige al punto lockeado al inicio
+			--    del amago (self.charge_target, fijado en la transición desde
+			--    APPROACH). NO se re-apunta: si el jugador se movió durante el
+			--    amago, la carga va hacia donde ya no está.
+			self.charge_target = self.charge_target or vmath.vector3(target_pos)
+			local to_target = self.charge_target - my_pos
+			to_target.z = 0
+			local len = vmath.length(to_target)
+			if len > 0.001 then
+				self.charge_dir = vmath.normalize(to_target)
+			else
+				-- El jugador está encima: embestir en dirección por defecto
+				self.charge_dir = vmath.vector3(1, 0, 0)
+			end
+			self.charge_timer = self.charge_max_duration
+			self.charge_hit_done = false
+			self.state = STATE_CHARGE
+			look_at(self, my_pos, self.charge_target)
+		end
+
+	-- ----------------------------------------------------
+	-- ESTADO: CHARGE (embestida en línea recta al punto lockeado)
+	-- ----------------------------------------------------
+	elseif self.state == STATE_CHARGE then
+		self.charge_timer = self.charge_timer - dt
+		-- Distancia al punto lockeado SIN alocar (componentes al cuadrado;
+		-- evita el vector `charge_target - my_pos` y el sqrt de vmath.length)
+		local dx = self.charge_target.x - my_pos.x
+		local dy = self.charge_target.y - my_pos.y
+		local arrived = (dx * dx + dy * dy) <= 15 * 15
+		if self.charge_timer <= 0 or arrived then
+			-- Fin de la embestida: recuperación
+			self.state = STATE_RECOVERY
+			self.recovery_timer = self.recovery_duration
+			pcall(function() sprite.play_flipbook("#sprite", hash("idle")) end)
+		else
+			-- Avance en línea recta mutando self.tmp_move (sin alocar)
+			local move = self.tmp_move
+			move.x = my_pos.x + self.charge_dir.x * self.charge_speed * dt
+			move.y = my_pos.y + self.charge_dir.y * self.charge_speed * dt
+			move.z = my_pos.z
+			go.set_position(move)
+			-- Orientación = dirección de la embestida (sin alocar)
+			set_rotation_from_dir(self, self.charge_dir)
+		end
+
+	-- ----------------------------------------------------
+	-- ESTADO: RECOVERY (aturdida tras embestir o chocar)
+	-- ----------------------------------------------------
+	elseif self.state == STATE_RECOVERY then
+		self.recovery_timer = self.recovery_timer - dt
+		if self.recovery_timer <= 0 then
+			self.state = STATE_APPROACH
+			pcall(function() sprite.play_flipbook("#sprite", hash("walk")) end)
+		end
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if self.state == STATE_DEATH then return end
+
+	if message_id == hash("contact_point_response") then
+		if message.group == hash("player_enemies") then
+			handle_player_collision(self, message)
+		elseif message.group == hash("walls") then
+			handle_wall_collision(self, message)
+		end
+	elseif message_id == hash("hit") or message_id == hash("take_damage") then
+		handle_damage(self, message)
+	end
+end
+
+function final(self)
+	-- Al destruirse el GO/script, parar sonidos persistentes de forma segura.
+	stop_all_enemy_sounds(self)
+end

@@ -1,0 +1,940 @@
+-- gui/interactive.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 💬 GUI INTERACTIVA — DIÁLOGOS Y QUIZ
+-- ═══════════════════════════════════════════════════════
+--
+--   Globos de diálogo sobre los NPCs, conversaciones y quiz
+--   (3 intentos, pie timer de color). Escala globos en móvil
+--   (platform.is_touch) y oculta web_controls durante el quiz.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "quiz_result" (hacia el emisor del quiz)
+--     → "quiz_state"  (hacia web_controls)
+--   Mensajes que RECIBE (on_message):
+--     ← "show_gui_dialog"/"hide_gui_dialog"/"reposition_dialog"
+--     ← "start_quiz"/"cancel_quiz"/"input_event"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local text_loader = require "main.text_loader"
+local screen_utils = require "main.screen_utils"  -- 📏 get_display_scale (GOTCHA #11)
+local platform = require "main.platform"         -- 📱 is_touch() → escalado de globos solo en móvil
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_INTERACTIVE = false
+local dprint = config.make_log(DEBUG_INTERACTIVE)
+
+-- 📱 Controles táctiles (Fase 6): durante el quiz se ocultan (quiz_state) para
+--    que el joystick no capture los toques sobre los botones de respuesta.
+local WEB_CONTROLS_URL = "bootstrap:/gui_web_controls#web_controls"
+
+-- 🥧 Pie timer del quiz: UNA animación radial continua (360° → 0° a velocidad
+-- constante durante todo el quiz_timeout, como un reloj). El color (verde → amarillo
+-- → rojo) se logra con TRES pies de color ESTÁTICO del editor que comparten el MISMO
+-- fill_angle y se muestran de uno en uno según la fase: verde en [0, 30%], amarillo en
+-- [30%, 75%], rojo en [75%, 100%]. Como el ángulo es idéntico en las tres capas, el
+-- cambio de color es invisible (no se reinicia la rotación). Solo se usa
+-- gui.set_fill_angle (mecanismo probado en el proyecto: pie_timer_to_exhibition), sin
+-- set_color ni gui.animate(PROP_COLOR) sobre nodos TYPE_PIE.
+local PIE_TIMER_GREEN_PHASE = 0.30  -- progreso (0..1) en el que termina la fase verde
+local PIE_TIMER_RED_PHASE   = 0.45  -- duración de la fase amarilla (verde + rojo = 0.75 → rojo)
+-- Parpadeo sutil de la capa roja en el tramo final (urgencia)
+local PIE_TIMER_PULSE_HZ    = 2.5   -- frecuencia del pulso (Hz)
+local PIE_TIMER_PULSE_MIN   = 0.55  -- alpha mínimo del pulso (1.0 = opaco)
+
+-- ⚠️ GOTCHA #1 (DEV_GOTCHAS.md): init() llama a hide_quiz_interface() y
+-- hide_dialog_bubbles(), que están definidas MÁS ABAJO en el archivo. Para que
+-- puedan ser locales (checklist #1 del estándar) sin romper init()/on_message()/
+-- handle_input(), se declaran ANTES con forward declaration: las definiciones
+-- posteriores (function X = ...) asignan a estos locales, y los callers los
+-- capturan como upvalues (se resuelven al cargar el archivo, antes de que el
+-- motor invoque init()).
+local hide_quiz_interface
+local hide_dialog_bubbles
+local show_quiz_interface
+local resolve_quiz
+
+-- Los textos se cargan en init y se recargan si cambia el idioma
+
+-- ============================================
+-- FUNCIONES AUXILIARES DE MAQUETACIÓN
+-- ============================================
+
+-- ============================================
+-- FUNCIÓN COMPARTIDA: auto-ajuste de texto + fondo
+-- Mide el texto, calcula la altura necesaria y aplica tamaños
+-- Devuelve: node_text_height, target_bg_height
+-- ============================================
+local function auto_size_node(text_node, bg_node, text,
+                               original_text_width, fixed_bg_width,
+                               padding_top, padding_bottom,
+                               min_height, text_scale)
+	local font_name = gui.get_font(text_node)
+	local font = gui.get_font_resource(font_name)
+
+	-- 1. Configurar line_break ANTES de medir (importante para wrapping correcto)
+	gui.set_line_break(text_node, true)
+	gui.set_size(text_node, vmath.vector3(original_text_width, 0, 0))
+
+	-- 2. Medir con el ancho real → metrics.height ya es la altura wrapeada exacta
+	local metrics = resource.get_text_metrics(font, text, { width = original_text_width, line_break = true })
+
+	-- 3. Altura del texto en espacio LOCAL del nodo (directa, sin reconstruir)
+	local node_text_height = metrics.height
+
+	-- 4. Altura VISUAL en pantalla (texto tiene scale, el bg no)
+	local visual_text_height = node_text_height * text_scale
+
+	-- 5. Padding vertical total
+	local padding_y = padding_top + padding_bottom
+
+	-- 6. Altura final del fondo
+	local target_bg_height = visual_text_height + padding_y
+
+	-- Altura mínima
+	if target_bg_height < min_height then
+		target_bg_height = min_height
+		visual_text_height = min_height - padding_y
+		node_text_height = visual_text_height / text_scale
+	end
+
+	-- 7. Aplicar tamaños
+	gui.set_size(bg_node, vmath.vector3(fixed_bg_width, target_bg_height, 0))
+	gui.set_size(text_node, vmath.vector3(original_text_width, node_text_height, 0))
+
+	return node_text_height, target_bg_height
+end
+
+-- ============================================
+-- AUTO-AJUSTE DEL GLOBO DE DIÁLOGO
+-- ============================================
+local function auto_size_bubble(bg_node, text_node, name_bg_node, name_text_node, complete_text)
+	local BUBBLE_PADDING_TOP = 12
+	local BUBBLE_PADDING_BOTTOM = 12
+
+	local _, target_bg_height = auto_size_node(
+		text_node, bg_node, complete_text,
+		1400,  -- original_text_width (coincide con size X inicial de text_npc/text_player)
+		300,   -- fixed_bg_width
+		BUBBLE_PADDING_TOP, BUBBLE_PADDING_BOTTOM,
+		40,    -- min_height
+		0.2    -- text_scale (coincide con scale del nodo text_npc/text_player)
+	)
+
+	-- 8. Posicionar texto (Pivot North del texto, Pivot South del globo)
+	local text_pos = gui.get_position(text_node)
+	text_pos.x = 0
+	text_pos.y = target_bg_height - BUBBLE_PADDING_TOP
+	gui.set_position(text_node, text_pos)
+
+	-- 9. Cartel de nombre — anchura ajustada al contenido del nombre
+	-- (text_npc_name / text_player_name, ya rellenados por el caller).
+	-- Se mide el texto con su fuente y escala reales (patrón auto_size_node);
+	-- el cartel (pivot SW, anclado al borde izquierdo del globo) crece hacia
+	-- la derecha hasta un máximo = ancho del globo. La altura se conserva de
+	-- la del editor. Como ambos nodos son hijos del contenedor, el escalado
+	-- móvil del globo (get_bubble_scale) afecta por igual a cartel y texto.
+	local name_text_scale = gui.get_scale(name_text_node).x  -- escala real del nodo text_*_name (0.2 en el editor)
+	local NAME_OFFSET_X = 10     -- desplazamiento del texto dentro del cartel
+	local NAME_PADDING_X = 20    -- padding horizontal total del cartel
+	local MIN_NAME_BG_WIDTH = 60
+	local bubble_width = gui.get_size(bg_node).x
+
+	local name_font = gui.get_font(name_text_node)
+	local name_font_resource = gui.get_font_resource(name_font)
+	local name_str = gui.get_text(name_text_node)
+	local name_metrics = resource.get_text_metrics(name_font_resource, name_str, {
+		width = 1400, line_break = true
+	})
+	-- Ancho visual del nombre (el texto lleva scale, el cartel no)
+	local name_bg_width = math.max(MIN_NAME_BG_WIDTH, name_metrics.width * name_text_scale + NAME_PADDING_X)
+	-- No dejar que el cartel se salga del borde derecho del globo
+	name_bg_width = math.min(name_bg_width, bubble_width - NAME_OFFSET_X * 2)
+
+	local name_bg_pos = gui.get_position(name_bg_node)
+	name_bg_pos.x = -(bubble_width / 2)
+	name_bg_pos.y = target_bg_height
+	gui.set_position(name_bg_node, name_bg_pos)
+	local name_bg_size = gui.get_size(name_bg_node)
+	name_bg_size.x = name_bg_width
+	gui.set_size(name_bg_node, name_bg_size)
+
+	local name_text_pos = gui.get_position(name_text_node)
+	name_text_pos.x = name_bg_pos.x + NAME_OFFSET_X
+	name_text_pos.y = name_bg_pos.y + NAME_OFFSET_X
+	gui.set_position(name_text_node, name_text_pos)
+	-- Evitar wrap dentro del cartel: ancho del texto = ancho medido (+slack);
+	-- si el clamp recortó el cartel, el texto se ciñe a él y envuelve ahí.
+	local name_text_width = math.min(
+		name_metrics.width + 4,
+		(name_bg_width - NAME_OFFSET_X * 2) / name_text_scale
+	)
+	local name_text_size = gui.get_size(name_text_node)
+	name_text_size.x = name_text_width
+	gui.set_size(name_text_node, name_text_size)
+
+	-- Debug: comparar altura reportada vs reconstruida
+	-- local BUBBLE_PADDING_Y = BUBBLE_PADDING_TOP + BUBBLE_PADDING_BOTTOM
+	-- print(string.format(
+	--     "[Globo] '%s' | visual: %.1f | bg: %.1f",
+	--     complete_text, target_bg_height - BUBBLE_PADDING_Y, target_bg_height
+	-- ))
+end
+
+-- ============================================
+-- AUTO-AJUSTE DE BOTONES DEL QUIZ
+-- ============================================
+
+-- Referencia de la resolución de la GUI (game.project display 1280×768).
+-- Se declara ANTES de get_bubble_scale/get_gui_fit (upvalues léxicos, estándar #1).
+local GUI_REFERENCE_W = 1280
+local GUI_REFERENCE_H = 768
+
+-- 📱 Fase 7b — Escalado de globos de diálogo en MÓVIL (GOTCHA #11/display).
+-- En landscape móvil la ventana es proporcionalmente más estrecha que la
+-- referencia 1280×768 y el ajuste FIT encoge los globos respecto al ancho de
+-- pantalla (en PC 300 uu ≈ 23% del ancho; en móvil ≈ 17%). Escalar el
+-- CONTENEDOR (pivot PIVOT_S, escala uniforme) agranda todo el globo desde su
+-- ancla sin despegarlo del personaje. Factor = win_w/(1280×fit) restaura la
+-- MISMA fracción de ancho que en la referencia (DPR-invariante: físico y CSS
+-- dan el mismo resultado). Solo táctil; en PC/native scale=1 (sin cambios).
+local BUBBLE_SCALE_MAX = 1.5
+local function get_bubble_scale()
+	if not platform.is_touch() then return 1 end
+	local w, h = window.get_size()
+	if w <= 0 or h <= 0 then return 1 end  -- HTML5 primer frame: conservador
+	local fit = math.min(w / GUI_REFERENCE_W, h / GUI_REFERENCE_H)
+	if fit <= 0 then return 1 end
+	local s = w / (GUI_REFERENCE_W * fit)
+	return math.max(1.0, math.min(s, BUBBLE_SCALE_MAX))
+end
+
+-- 📏 Tamaño mínimo de toque recomendado (44px iOS / 48px Material Design).
+-- El auto-ajuste ya hace crecer el botón con textos largos; este mínimo
+-- garantiza un target táctil usable también con textos de UNA línea.
+local MIN_TOUCH_HEIGHT_PX = 48
+
+-- 📱 Quiz en MÓVIL (arreglo Ago 2026): las opciones del quiz de restauración
+-- (pool_2) tienen labels de 40-80 caracteres y en móvil landscape se quedan
+-- pequeñas/desbordan. En táctil:
+--   • Botón más ANCHO → más chars por línea → menos líneas → menos altura.
+--   • Panel más grande y re-centrado (los nodos del quiz son raíz en el
+--     editor → se desplazan TODOS con el mismo delta).
+--   • Escala del texto de opciones mayor que la del editor (legibilidad).
+-- auto_size_button LEE la escala real con gui.get_scale (ya no la hardcodea),
+-- así que cualquier cambio de escala en el editor se propaga al cálculo.
+local QUIZ_BUTTON_TOUCH_WIDTH  = 440   -- ancho del botón de opción en móvil (uu)
+local QUIZ_TEXT_TOUCH_SCALE    = 0.32  -- escala del texto de opción en móvil (editor: 0.25)
+local QUIZ_PANEL_TOUCH_W       = 480   -- ancho del panel del quiz en móvil (uu)
+local QUIZ_PANEL_TOUCH_H       = 660   -- alto del panel del quiz en móvil (uu)
+local QUIZ_PANEL_TOUCH_X       = 250   -- centro X del panel en móvil (editor: 198)
+local QUIZ_PANEL_TOUCH_Y       = 350   -- centro Y del panel en móvil (igual que el editor)
+
+-- Factor de escala FIT de la GUI actual: fit = min(win_w/1280, win_h/768).
+-- El tamaño de los nodos se declara en unidades de escena (referencia) y el
+-- motor los escala por este factor en pantalla, así que para garantizar un
+-- mínimo de PÍXELES reales hay que convertirlos: min_uu = px / fit.
+local function get_gui_fit()
+	local w, h = window.get_size()
+	if w <= 0 or h <= 0 then return 1.0 end  -- HTML5 primer frame: conservador
+	-- Clamp inferior defensivo: un fit extremadamente bajo (ventanas diminutas
+	-- o portrait —este último bloqueado por el overlay de rotación—) dispararía
+	-- min_height descomunales y los botones se saldrían del panel. En HTML5 con
+	-- high_dpi=1 el fit ya viene escalado por DPR (móvil landscape ≈ 1.5, ver
+	-- GOTCHA #11), así que en la práctica no baja de ~1.0; el suelo 0.4 solo
+	-- protege ventanas de escritorio muy pequeñas.
+	return math.max(0.4, math.min(w / GUI_REFERENCE_W, h / GUI_REFERENCE_H))
+end
+
+-- 🔢 Compensación DPR (HTML5 + display.high_dpi=1): con High DPI activado, el
+-- canvas y window.get_size() vienen escalados por devicePixelRatio (confirmado
+-- por el staff de Defold en el foro, hilo "High DPI Window Size Discrepancy":
+-- high_dpi ON → get_size = CSS × DPR, p. ej. 640×360 → 704×396 con DPR 1.1).
+-- El estándar de toque (44-48px) se mide en CSS px, así que la conversión a
+-- unidades de escena debe compensar: min_uu = MIN_TOUCH_HEIGHT_PX × DPR / fit.
+-- En native (desktop/móvil) DPR = 1 → la fórmula queda igual que antes.
+-- Fuente ÚNICA: screen_utils.get_display_scale() (GOTCHA #11). Alias corto.
+local get_dpr = screen_utils.get_display_scale
+
+local function auto_size_button(button_container, button_bg, button_text, answer_text)
+	-- 🖱️ Altura mínima en unidades de escena que garantiza ≥ MIN_TOUCH_HEIGHT_PX
+	-- píxeles REALES (CSS) de área táctil (el contenedor se redimensiona al
+	-- tamaño del fondo en el paso 9, así que el mínimo también agranda la hitbox).
+	-- En móvil landscape (canvas ~650×390 CSS, DPR 3): fit=1.52, dpr=3 →
+	-- min = 48×3/1.52 ≈ 94.5 uu → 48px CSS. En escritorio native (fit=1, dpr=1)
+	-- → 48 uu. En escritorio HTML5 (canvas 1280×768 × DPR 2): 48×2/2 = 48 uu.
+	-- 📏 Escala REAL del texto (no hardcode 0.2): el editor manda. Antes se
+	-- calculaba la altura con 0.2 pero el nodo se dibuja a 0.25 → el texto
+	-- real era 25% más alto que el espacio reservado (desborde vertical con
+	-- opciones largas). El hover anima la escala del CONTENEDOR (button_N),
+	-- no la del texto, así que esta escala local es estable.
+	local text_scale = gui.get_scale(button_text).x
+
+	-- 📐 Ancho del botón: el del editor, ampliado en táctil para las opciones
+	-- largas del quiz de restauración (más chars por línea → menos altura).
+	local bg_width = gui.get_size(button_bg).x
+	if platform.is_touch() then
+		bg_width = math.max(bg_width, QUIZ_BUTTON_TOUCH_WIDTH)
+	end
+
+	-- ✂️ El texto envuelve EXACTAMENTE al ancho visual del botón: ancho local =
+	-- ancho visual / escala. Antes era 1300 fijo → 325 uu visuales (1300×0.25)
+	-- sobre un botón de 300 → desborde lateral.
+	local text_width = math.max(1, bg_width / text_scale)
+
+	local min_height = math.max(40, MIN_TOUCH_HEIGHT_PX * get_dpr() / get_gui_fit())
+
+	local _, target_bg_height = auto_size_node(
+		button_text, button_bg, answer_text,
+		text_width,  -- wrap exacto al ancho del botón
+		bg_width,    -- fixed_bg_width (editor, o ampliado en móvil)
+		10, 10, -- padding_top, padding_bottom
+		min_height,  -- min_height (screen-aware: ≥ 48px reales)
+		text_scale   -- escala real del nodo (editor manda)
+	)
+
+	-- 8. Centrar el texto sobre la imagen del botón (ambos Pivot: Center):
+	-- el texto sigue la posición de la imagen tal y como está en el editor,
+	-- de modo que el centrado vertical se mantiene aunque se redistribuyan
+	-- los nodos en el editor (no hay valores absolutos aquí).
+	local image_pos = gui.get_position(button_bg)
+	local text_pos = gui.get_position(button_text)
+	text_pos.x = image_pos.x
+	text_pos.y = image_pos.y
+	gui.set_position(button_text, text_pos)
+
+	-- 9. Redimensionar el contenedor (hitbox de pick_node) al tamaño real
+	-- del botón visible: al tener pivot CENTER, su posición (centro) no cambia
+	-- y el reposicionamiento posterior (reposition_quiz_buttons) se mantiene
+	-- correcto. Con esto los clics cubren todo el botón, incluso con textos
+	-- largos que crecen por wrapping. Se reutiliza el tamaño ya aplicado a la
+	-- imagen (editor-relative: si cambia el ancho en el editor, se propaga).
+	gui.set_size(button_container, gui.get_size(button_bg))
+
+	return target_bg_height
+end
+
+-- 🆕 Re-ordenar verticalmente los botones con distribución RELATIVA al layout
+-- del editor (capturado en init): el borde superior del primer botón se ancla
+-- a su posición en el editor y los siguientes se apilan con la separación
+-- derivada del editor. Así no hay valores absolutos que mantener al día.
+--
+-- 📏 Gap ADAPTATIVO (code review, Ago 2026): con el mínimo de toque 48px los
+-- botones pueden medir ~95 uu en móvil landscape (fit≈0.5); apilados desde el
+-- ancla del editor (y≈358) con el gap fijo del editor (20) desbordaban el
+-- borde inferior del panel (y=50). Aquí el gap se encoge (mín. 8) cuando la
+-- suma de alturas no cabe entre el ancla y el borde inferior del panel, de
+-- modo que: desktop → gap del editor (layout idéntico al editor); móvil →
+-- pila comprimida que cabe en el panel. El ancla NO se mueve (evita desviar
+-- el layout desktop y no depende de la altura de la pregunta).
+-- 🆕 Captura el layout del quiz tal y como está EN EL EDITOR (o tras aplicar
+-- el layout móvil): posiciones Y de los botones, ancla superior y separación.
+-- Todo lo demás es relativo a estos valores (no hay absolutos que mantener).
+local function capture_quiz_layout(self)
+	self.editor_button_y = {}
+	local editor_button_height = gui.get_size(self.button_nodes[1]).y
+	for i = 1, #self.button_nodes do
+		self.editor_button_y[i] = gui.get_position(self.button_nodes[i]).y
+	end
+	-- Ancla: borde superior del primer botón según su posición actual
+	self.quiz_top_anchor = self.editor_button_y[1] + (editor_button_height / 2)
+	-- Separación entre botones derivada de la posición actual
+	local editor_gap = 20
+	if #self.button_nodes >= 2 and self.editor_button_y[2] then
+		editor_gap = (self.editor_button_y[1] - self.editor_button_y[2]) - editor_button_height
+	end
+	self.button_gap = math.max(editor_gap, 8)
+end
+
+-- 📱 Móvil: re-centra el panel del quiz y lo agranda para albergar las opciones
+-- largas del quiz de restauración. Los nodos del quiz son raíz en el editor
+-- (panel, icono, pies, imagen, pregunta, botones) → se desplazan TODOS con el
+-- mismo delta. Se aplica UNA vez al inicio del primer quiz (flag), cuando la
+-- detección de plataforma (platform.detect, bootstrap) ya está resuelta — el
+-- mismo criterio que get_bubble_scale. Tras mover, se re-captura el layout
+-- para que ancla/gap sigan siendo relativos a las posiciones reales.
+local function apply_quiz_mobile_layout(self)
+	if self._quiz_layout_applied then return end
+	self._quiz_layout_applied = true
+
+	local panel_pos = gui.get_position(self.quiz_bg_node)
+	local dx = QUIZ_PANEL_TOUCH_X - panel_pos.x
+	local dy = QUIZ_PANEL_TOUCH_Y - panel_pos.y
+
+	-- Nodos raíz que acompañan al panel (mismo desplazamiento)
+	local nodes = {
+		self.quiz_bg_node, self.quiz_icon_node,
+		self.pie_timer_node, self.pie_timer_yellow_node, self.pie_timer_red_node,
+		self.image_node, self.question_text_node,
+	}
+	for _, node in ipairs(nodes) do
+		if node then
+			local p = gui.get_position(node)
+			p.x = p.x + dx
+			p.y = p.y + dy
+			gui.set_position(node, p)
+		end
+	end
+
+	-- Botones: re-centrados en el nuevo panel (x fija del panel móvil)
+	for _, node in ipairs(self.button_nodes) do
+		if node then
+			local p = gui.get_position(node)
+			p.x = QUIZ_PANEL_TOUCH_X
+			p.y = p.y + dy
+			gui.set_position(node, p)
+		end
+	end
+
+	-- Panel: nuevo tamaño
+	gui.set_size(self.quiz_bg_node, vmath.vector3(QUIZ_PANEL_TOUCH_W, QUIZ_PANEL_TOUCH_H, 0))
+
+	-- 📱 Escala del texto de opciones SOLO en móvil (legibilidad). auto_size_button
+	-- la lee con gui.get_scale → el cálculo de alturas la acompaña solo.
+	for _, node in ipairs(self.text_nodes) do
+		if node then
+			gui.set_scale(node, vmath.vector3(QUIZ_TEXT_TOUCH_SCALE, QUIZ_TEXT_TOUCH_SCALE, 1))
+		end
+	end
+
+	-- Re-capturar ancla/gap sobre las posiciones ya móviles
+	capture_quiz_layout(self)
+end
+
+local function reposition_quiz_buttons(self, button_heights)
+	-- Suma de alturas de los botones (para calcular el gap disponible)
+	local total_h = 0
+	for i = 1, #button_heights do
+		total_h = total_h + (button_heights[i] or 0)
+	end
+
+	-- Borde inferior del panel (box_background_quiz): centro − mitad de altura
+	local bg_pos   = gui.get_position(self.quiz_bg_node)
+	local bg_size  = gui.get_size(self.quiz_bg_node)
+	local panel_bottom = bg_pos.y - (bg_size.y * 0.5)
+
+	-- Espacio libre entre el ancla (top del botón 1 en el editor) y el borde
+	-- inferior del panel, tras reservar la suma de alturas. Repartido entre
+	-- los gaps → gap máximo permitido.
+	local n = #button_heights
+	local gap = self.button_gap
+	if n >= 2 then
+		local available = (self.quiz_top_anchor - panel_bottom) - total_h
+		local max_gap = available / (n - 1)
+		gap = math.max(8, math.min(gap, max_gap))
+	end
+
+	local current_y = self.quiz_top_anchor
+	for i = 1, #self.button_nodes do
+		if button_heights[i] then
+			-- Calcular nueva posición Y (centro del botón)
+			local pos = gui.get_position(self.button_nodes[i])
+			pos.y = current_y - (button_heights[i] / 2)
+			gui.set_position(self.button_nodes[i], pos)
+
+			-- Actualizar Y para el siguiente botón
+			current_y = current_y - button_heights[i] - gap
+		end
+	end
+end
+
+
+local function start_typewriter_effect(self, text_node, full_text)
+	if self.typewriter_timer then
+		pcall(function() timer.cancel(self.typewriter_timer) end)
+		self.typewriter_timer = nil
+	end
+
+	gui.set_text(text_node, "")
+
+	local chars = {}
+	for char in string.gmatch(full_text, "[%z\1-\127\194-\244][\128-\191]*") do
+		table.insert(chars, char)
+	end
+
+	local current_char = 0
+	local total_chars = #chars
+	local speed = 0.03 
+
+	self.typewriter_timer = timer.delay(speed, true, function(handle, time_elapsed)
+		current_char = current_char + 1
+
+		if current_char <= total_chars then
+			local substring = table.concat(chars, "", 1, current_char)
+			gui.set_text(text_node, substring)
+		else
+			pcall(function() timer.cancel(handle) end)
+			if self.typewriter_timer == handle then
+				self.typewriter_timer = nil
+			end
+		end
+	end)
+end
+
+-- 💬 Separa el "Nombre: texto" que llega en full_text. El nombre real viene
+-- SIEMPRE con el prefijo preparado por dialogue_manager (localizado por
+-- idioma); el fallback (solo si el texto llegara sin prefijo) es el nombre
+-- localizado del personaje desde characters, nunca un string hardcodeado
+-- en español (GOTCHA #20). Unico punto donde se parsea el prefijo: los
+-- branches de show_gui_dialog lo reutilizan (antes estaba duplicado).
+local function extract_name_and_text(self, full_text, speaker)
+	local char = self.texts and self.texts.characters and self.texts.characters[speaker]
+	local name_str = (char and char.name) or ""
+	local dialogue_str = full_text
+
+	local colon_idx = string.find(full_text, ": ")
+	if colon_idx then
+		name_str = string.sub(full_text, 1, colon_idx - 1)
+		dialogue_str = string.sub(full_text, colon_idx + 2)
+	end
+
+	return name_str, dialogue_str
+end
+
+-- ============================================
+-- MÉTODOS DEL SCRIPT
+-- ============================================
+
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima):
+	-- pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+	gui.set_render_order(1)
+
+	msg.post(".", "acquire_input_focus")
+
+	self.active = false
+	self.quiz_timeout = 10
+	self.timer_handle = nil
+	self.sender_url = nil   
+	self.current_question_id = ""
+	self.quiz_elapsed = 0
+
+	-- Referencias diálogos
+	self.container_player = gui.get_node("balloon_player_container")
+	self.container_npc = gui.get_node("balloon_npc_container")
+	self.speech_player = gui.get_node("speech_player")
+	self.speech_npc = gui.get_node("speech_npc")
+	self.text_player = gui.get_node("text_player")
+	self.text_npc = gui.get_node("text_npc")
+	self.speech_npc_name = gui.get_node("speech_npc_name")
+	self.text_npc_name = gui.get_node("text_npc_name")
+	self.speech_player_name = gui.get_node("speech_player_name")
+	self.text_player_name = gui.get_node("text_player_name")
+
+	-- REFERENCIAS QUIZ
+	self.image_node = gui.get_node("image_quiz")
+	self.question_text_node = gui.get_node("question")
+	self.pie_timer_node = gui.get_node("pie_timer_quiz")
+	self.pie_timer_yellow_node = gui.get_node("pie_timer_quiz_yellow")
+	self.pie_timer_red_node = gui.get_node("pie_timer_quiz_red")
+
+	-- 🆕 Referencias a los nuevos componentes del quiz (fondo + icono)
+	self.quiz_bg_node = gui.get_node("box_background_quiz")
+	self.quiz_icon_node = gui.get_node("box_icon_quiz")
+
+	-- 🆕 Referencias a los contenedores de botones Y sus imágenes
+	self.button_nodes = {
+		gui.get_node("button_1"),
+		gui.get_node("button_2"),
+		gui.get_node("button_3")
+	}
+
+	self.button_image_nodes = {
+		gui.get_node("button_1_image"),
+		gui.get_node("button_2_image"),
+		gui.get_node("button_3_image")
+	}
+
+	self.text_nodes = {
+		gui.get_node("text_1"),
+		gui.get_node("text_2"),
+		gui.get_node("text_3")
+	}
+
+	-- 🆕 Layout del quiz definido en el editor: se captura en init (y se
+	-- re-captura tras aplicar el layout móvil) para hacer ajustes RELATIVOS.
+	-- Si se redistribuyen nodos en el editor, el script se adapta solo.
+	-- Nota: la captura ocurre SIEMPRE antes del primer auto_size_button, así
+	-- que la altura del contenedor leída aquí coincide con la del editor
+	-- (el paso 9 de auto_size_button sí redimensiona el contenedor, pero
+	-- después de esta captura).
+	self._quiz_layout_applied = false
+	capture_quiz_layout(self)
+
+	self.original_scales = {}
+	self.hover_states = { false, false, false }
+
+	for i = 1, #self.button_nodes do
+		self.original_scales[i] = gui.get_scale(self.button_nodes[i])
+	end
+
+	self.hover_scale = vmath.vector3(1.15, 1.15, 1.15)
+	self.normal_scale = vmath.vector3(1, 1, 1)
+	self.animation_duration = 0.15
+	self.button_evaluation = {} 
+	self.typewriter_timer = nil
+
+	-- Cargar textos según el idioma actual
+	self.texts = text_loader.load("main", text_loader.get_current_lang())
+
+	-- Recargar textos si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.texts = text_loader.reload("main", new_lang)
+		dprint("[Interactive GUI] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	hide_quiz_interface(self)
+	hide_dialog_bubbles(self)
+end
+
+function hide_quiz_interface(self)
+	gui.set_enabled(self.quiz_bg_node, false)
+	gui.set_enabled(self.quiz_icon_node, false)
+	gui.set_enabled(self.question_text_node, false)
+	gui.set_enabled(self.image_node, false)
+	gui.set_enabled(self.pie_timer_node, false)
+	gui.set_enabled(self.pie_timer_yellow_node, false)
+	gui.set_enabled(self.pie_timer_red_node, false)
+
+	for i = 1, #self.button_nodes do
+		gui.cancel_animations(self.button_nodes[i], gui.PROP_SCALE)
+		gui.set_enabled(self.button_nodes[i], false)
+		gui.set_enabled(self.text_nodes[i], false) 
+		self.hover_states[i] = false
+	end
+end
+
+function hide_dialog_bubbles(self)
+	gui.set_enabled(self.container_player, false)
+	gui.set_enabled(self.container_npc, false)
+end
+
+function show_quiz_interface(self)
+	gui.set_enabled(self.quiz_bg_node, true)
+	gui.set_enabled(self.quiz_icon_node, true)
+
+	for i = 1, #self.button_nodes do
+		gui.set_scale(self.button_nodes[i], self.original_scales[i])
+		gui.set_enabled(self.button_nodes[i], true)
+		gui.set_enabled(self.text_nodes[i], true)
+	end
+
+	gui.set_enabled(self.question_text_node, true)
+	gui.set_enabled(self.image_node, true)
+	gui.set_enabled(self.pie_timer_node, true)
+	gui.set_enabled(self.pie_timer_yellow_node, true)
+	gui.set_enabled(self.pie_timer_red_node, true)
+end
+
+local function animate_button_scale(self, index, target_scale)
+	local node = self.button_nodes[index]
+	local orig_scale = self.original_scales[index]
+
+	gui.cancel_animations(node, gui.PROP_SCALE)
+	gui.animate(node, gui.PROP_SCALE, target_scale, gui.EASING_OUTQUAD, self.animation_duration, 0, nil, function()
+		if not self.hover_states[index] and target_scale == self.normal_scale then
+			gui.set_scale(node, orig_scale)
+		end
+	end)
+end
+
+local function shuffle_table(t)
+	for i = #t, 2, -1 do
+		local j = math.random(i)
+		t[i], t[j] = t[j], t[i]
+	end
+	return t
+end
+
+function resolve_quiz(self, is_success)
+	self.active = false
+	self.quiz_elapsed = 0
+
+	-- 📱 Volver a mostrar los controles táctiles al cerrar el quiz.
+	msg.post(WEB_CONTROLS_URL, "quiz_state", { active = false })
+
+	if self.timer_handle then
+		timer.cancel(self.timer_handle)
+		self.timer_handle = nil
+	end
+
+	hide_quiz_interface(self)
+	hide_dialog_bubbles(self)
+
+	if self.sender_url then
+		msg.post(self.sender_url, "quiz_result", {
+			result = is_success and "success" or "failure",
+			question_id = self.current_question_id
+		})
+	end
+end
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	if not self.active then return end
+
+	if action_id == nil then
+		for i = 1, #self.button_nodes do
+			if gui.pick_node(self.button_nodes[i], action.x, action.y) then
+				if not self.hover_states[i] then
+					self.hover_states[i] = true
+					animate_button_scale(self, i, self.hover_scale)
+				end
+			else
+				if self.hover_states[i] then
+					self.hover_states[i] = false
+					animate_button_scale(self, i, self.normal_scale)
+				end
+			end
+		end
+	end
+
+	if action_id == hash("touch") or action_id == hash("click") then
+		if action.pressed then
+			for idx = 1, #self.button_nodes do
+				local node = self.button_nodes[idx]
+
+				if gui.pick_node(node, action.x, action.y) then
+					local correct_answer = self.button_evaluation[idx]
+
+					if correct_answer then
+						dprint("QUIZ: ¡Opción Correcta seleccionada! (Botón Físico " .. idx .. ")")
+						resolve_quiz(self, true)
+					else
+						dprint("QUIZ: Opción Incorrecta seleccionada. (Botón Físico " .. idx .. ")")
+						resolve_quiz(self, false)
+					end
+					return
+				end
+			end
+		end
+	end
+end
+
+-- ⏱️ Actualización por frame del pie timer del quiz: UNA sola animación radial
+-- continua (360° → 0° a velocidad constante durante todo el quiz_timeout), como un
+-- reloj. El color (verde → amarillo → rojo) se cambia mostrando UNA capa a la vez:
+-- las tres capas comparten el mismo fill_angle, así que el cambio de capa no reinicia
+-- la rotación. Verde en [0, 30%], amarillo en [30%, 75%], rojo en [75%, 100%].
+function update(self, dt)
+	if not self.active then return end
+
+	-- Acumular tiempo transcurrido con dt (sin socket.get_time(), no disponible)
+	self.quiz_elapsed = self.quiz_elapsed + dt
+	local progress = math.max(0, math.min(1, self.quiz_elapsed / self.quiz_timeout))
+
+	-- Ángulo continuo: 360° → 0° durante TODO el quiz (velocidad constante)
+	local fill = 360 * (1 - progress)
+
+	-- Fase actual: qué capa mostrar (todas comparten el mismo ángulo)
+	local show_green  = progress < PIE_TIMER_GREEN_PHASE
+	local show_yellow = progress >= PIE_TIMER_GREEN_PHASE and progress < (PIE_TIMER_GREEN_PHASE + PIE_TIMER_RED_PHASE)
+	local show_red    = progress >= (PIE_TIMER_GREEN_PHASE + PIE_TIMER_RED_PHASE)
+
+	gui.set_fill_angle(self.pie_timer_node, fill)
+	gui.set_fill_angle(self.pie_timer_yellow_node, fill)
+	gui.set_fill_angle(self.pie_timer_red_node, fill)
+
+	gui.set_enabled(self.pie_timer_node, show_green)
+	gui.set_enabled(self.pie_timer_yellow_node, show_yellow)
+	gui.set_enabled(self.pie_timer_red_node, show_red)
+
+	-- Pulso sutil de alpha en la capa roja (tramo final): oscila entre 0.55 y 1.0
+	if show_red then
+		local pulse = 0.5 + 0.5 * math.sin(2 * math.pi * PIE_TIMER_PULSE_HZ * self.quiz_elapsed)
+		gui.set_alpha(self.pie_timer_red_node, vmath.lerp(pulse, PIE_TIMER_PULSE_MIN, 1.0))
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	if message_id == hash("show_gui_dialog") then
+
+		-- 📱 Fase 7b: escalado del globo en móvil (1 en PC) — ver get_bubble_scale
+		local bs = get_bubble_scale()
+
+		if message.speaker == "player" then
+			gui.set_enabled(self.container_npc, false)
+
+			if not gui.is_enabled(self.container_player) then
+				gui.set_enabled(self.container_player, true)
+			end
+
+			-- 💬 message.speaker == "player": el helper extrae nombre + texto
+			local name_str, dialogue_str = extract_name_and_text(self, message.full_text, message.speaker)
+
+			gui.set_text(self.text_player_name, name_str)
+			auto_size_bubble(self.speech_player, self.text_player, self.speech_player_name, self.text_player_name, dialogue_str)
+			-- 🖥️ GOTCHA resize: screen_pos viene en screen space (píxeles de ventana).
+			-- gui.set_screen_position convierte a local con el adjust mode y el tamaño
+			-- de ventana ACTUALES, por lo que el globo se mantiene sobre el objeto
+			-- aunque se redimensione la ventana (fullscreen HTML5). NO usar
+			-- gui.set_position (espera coordenadas locales de la escena GUI).
+			gui.set_screen_position(self.container_player, message.screen_pos)
+			gui.set_scale(self.container_player, vmath.vector3(bs, bs, 1))
+			start_typewriter_effect(self, self.text_player, dialogue_str)
+
+		else
+			gui.set_enabled(self.container_player, false)
+
+			if not gui.is_enabled(self.container_npc) then
+				gui.set_enabled(self.container_npc, true)
+			end
+
+			-- 💬 message.speaker es el npc_id (p. ej. "npc_12"): helper común
+			local name_str, dialogue_str = extract_name_and_text(self, message.full_text, message.speaker)
+
+			gui.set_text(self.text_npc_name, name_str)
+			auto_size_bubble(self.speech_npc, self.text_npc, self.speech_npc_name, self.text_npc_name, dialogue_str)
+			-- 🖥️ GOTCHA resize: screen_pos viene en screen space (ver container_player).
+			gui.set_screen_position(self.container_npc, message.screen_pos)
+			gui.set_scale(self.container_npc, vmath.vector3(bs, bs, 1))
+			start_typewriter_effect(self, self.text_npc, dialogue_str)
+		end
+
+	elseif message_id == hash("hide_gui_dialog") then
+		if self.typewriter_timer then
+			pcall(function() timer.cancel(self.typewriter_timer) end)
+			self.typewriter_timer = nil
+		end
+		hide_dialog_bubbles(self)
+
+	elseif message_id == hash("reposition_dialog") then
+		-- 🖥️ GOTCHA resize: re-ancla el globo tras un cambio de ventana (fullscreen)
+		-- SIN reiniciar el typewriter. Solo actualiza la posición de pantalla del
+		-- contenedor del hablante actual; el motor convierte a local con el adjust
+		-- mode y el tamaño de ventana ACTUALES (ver GOTCHA #6).
+		if message.speaker and message.screen_pos then
+			local container = message.speaker == "player" and self.container_player or self.container_npc
+			if container and gui.is_enabled(container) then
+				gui.set_screen_position(container, message.screen_pos)
+				-- 📱 Fase 7b: mantener el escalado móvil tras un resize/fullscreen
+				local bs = get_bubble_scale()
+				gui.set_scale(container, vmath.vector3(bs, bs, 1))
+			end
+		end
+
+	elseif message_id == hash("start_quiz") then
+		if self.active then return end
+
+		-- 🔥 Asegurar que el game object tiene foco de entrada (puede haberse
+		-- perdido si otro componente, ej. exhibition.gui, llamó release_input_focus)
+		msg.post(".", "acquire_input_focus")
+
+		self.active = true
+		self.sender_url = sender
+		self.current_question_id = message.question_id
+
+		local pool = self.texts.quizzes and self.texts.quizzes[message.pool_id]
+		local question = nil
+
+		if pool and pool.questions then
+			for _, q in ipairs(pool.questions) do
+				if q.id == message.question_id then
+					question = q
+					break
+				end
+			end
+		end
+
+		if not question then
+			dprint("ERROR QUIZ: No se halló la pregunta " .. message.question_id .. " en el pool " .. message.pool_id)
+			self.active = false
+			return
+		end
+
+		if question.image and question.image ~= "" then
+			gui.play_flipbook(self.image_node, question.image)
+		end
+
+		if question.text then
+			gui.set_text(self.question_text_node, question.text)
+		end
+
+		local options = {}
+		for i, opt in ipairs(question.options) do
+			table.insert(options, { text = opt.label, is_correct = opt.is_correct })
+		end
+
+		options = shuffle_table(options)
+
+		-- 📱 Móvil: aplicar el layout del quiz (panel agrandado + texto más
+		-- grande) al inicio del PRIMER quiz. La detección de plataforma ya
+		-- está resuelta aquí (el quiz llega tras la intro y la carga del nivel).
+		if platform.is_touch() then
+			apply_quiz_mobile_layout(self)
+		end
+
+		-- 🆕 Guardar alturas para re-ordenamiento
+		local button_heights = {}
+
+		for idx = 1, 3 do
+			local opt = options[idx]
+			gui.set_text(self.text_nodes[idx], opt.text)
+			self.button_evaluation[idx] = opt.is_correct
+
+			-- 🆕 Auto-ajustar cada botón según su texto
+			button_heights[idx] = auto_size_button(
+			self.button_nodes[idx],
+			self.button_image_nodes[idx],
+			self.text_nodes[idx],
+			opt.text
+		)
+	end
+
+	-- 🆕 Re-ordenar los botones verticalmente según sus nuevas alturas
+	reposition_quiz_buttons(self, button_heights)
+
+	-- 📱 Ocultar los controles táctiles mientras el quiz esté abierto (el
+	-- joystick solapa con los botones de respuesta en móvil). Se postea SOLO
+	-- tras el lookup exitoso: si la pregunta no existe, la rama de error
+	-- retorna sin quiz y no debe dejar los controles ocultos (code review).
+	msg.post(WEB_CONTROLS_URL, "quiz_state", { active = true })
+
+	show_quiz_interface(self)
+
+	-- ⏱️ Inicializar el pie timer: todas las capas a 360°, solo el verde visible
+	-- (update() cambia de capa en cada fase manteniendo el mismo ángulo).
+	gui.set_fill_angle(self.pie_timer_node, 360)
+	gui.set_fill_angle(self.pie_timer_yellow_node, 360)
+	gui.set_fill_angle(self.pie_timer_red_node, 360)
+	gui.set_alpha(self.pie_timer_red_node, 1.0)
+	gui.set_enabled(self.pie_timer_node, true)
+	gui.set_enabled(self.pie_timer_yellow_node, false)
+	gui.set_enabled(self.pie_timer_red_node, false)
+	self.quiz_elapsed = 0
+
+	self.timer_handle = timer.delay(self.quiz_timeout, false, function()
+		if self.active then
+			dprint("QUIZ: ¡Tiempo agotado!")
+			resolve_quiz(self, false)
+		end
+	end)
+
+elseif message_id == hash("cancel_quiz") then
+	if self.active then
+		resolve_quiz(self, false)
+	end
+end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end

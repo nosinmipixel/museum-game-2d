@@ -1,0 +1,411 @@
+animations {
+  id: "door_front_open"
+  images {
+    image: "/assets/textures/props/door_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_04.png"
+  }
+  fps: 8
+}
+animations {
+  id: "door_front_close"
+  images {
+    image: "/assets/textures/props/door_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 8
+}
+animations {
+  id: "door_front_idle"
+  images {
+    image: "/assets/textures/props/door_front_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 1
+}
+animations {
+  id: "door_side_idle"
+  images {
+    image: "/assets/textures/props/door_side_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 1
+}
+animations {
+  id: "door_side_open"
+  images {
+    image: "/assets/textures/props/door_side_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_04.png"
+  }
+  fps: 8
+}
+animations {
+  id: "door_side_close"
+  images {
+    image: "/assets/textures/props/door_side_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_side_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 8
+}
+animations {
+  id: "door_main_idle"
+  images {
+    image: "/assets/textures/props/door_main_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_main_open"
+  images {
+    image: "/assets/textures/props/door_main_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_main_close"
+  images {
+    image: "/assets/textures/props/door_main_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "door_service_idle"
+  images {
+    image: "/assets/textures/props/door_service_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_service_open"
+  images {
+    image: "/assets/textures/props/door_service_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_service_close"
+  images {
+    image: "/assets/textures/props/door_service_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "door_front_back_open"
+  images {
+    image: "/assets/textures/props/door_front_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_04.png"
+  }
+  fps: 8
+}
+animations {
+  id: "door_front_back_close"
+  images {
+    image: "/assets/textures/props/door_front_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_back_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 8
+}
+animations {
+  id: "door_front_back_idle"
+  images {
+    image: "/assets/textures/props/door_front_back_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 1
+}
+animations {
+  id: "door_front_front_open"
+  images {
+    image: "/assets/textures/props/door_front_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_04.png"
+  }
+  fps: 8
+}
+animations {
+  id: "door_front_front_close"
+  images {
+    image: "/assets/textures/props/door_front_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_front_front_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 8
+}
+animations {
+  id: "door_front_front_idle"
+  images {
+    image: "/assets/textures/props/door_front_front_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 1
+}
+animations {
+  id: "door_main_back_idle"
+  images {
+    image: "/assets/textures/props/door_main_back_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_main_back_open"
+  images {
+    image: "/assets/textures/props/door_main_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_main_back_close"
+  images {
+    image: "/assets/textures/props/door_main_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_back_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "door_main_front_idle"
+  images {
+    image: "/assets/textures/props/door_main_front_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_main_front_open"
+  images {
+    image: "/assets/textures/props/door_main_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_main_front_close"
+  images {
+    image: "/assets/textures/props/door_main_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_main_front_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "door_service_back_idle"
+  images {
+    image: "/assets/textures/props/door_service_back_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_service_back_open"
+  images {
+    image: "/assets/textures/props/door_service_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_service_back_close"
+  images {
+    image: "/assets/textures/props/door_service_back_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_back_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "door_service_front_idle"
+  images {
+    image: "/assets/textures/props/door_service_front_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "door_service_front_open"
+  images {
+    image: "/assets/textures/props/door_service_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "door_service_front_close"
+  images {
+    image: "/assets/textures/props/door_service_front_01.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_02.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_03.png"
+  }
+  images {
+    image: "/assets/textures/props/door_service_front_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+extrude_borders: 2

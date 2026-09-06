@@ -1,0 +1,745 @@
+script: "/gui/pause.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+nodes {
+  size {
+    x: 1280.0
+    y: 768.0
+  }
+  type: TYPE_BOX
+  id: "pause_root"
+  layer: "background"
+  alpha: 0.0
+}
+nodes {
+  position {
+    x: 663.0
+    y: 189.0
+  }
+  scale {
+    x: 2.0
+    y: 2.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_resume"
+  id: "btn_resume"
+  parent: "pause_root"
+  layer: "top"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 96.0
+    y: 522.0
+  }
+  scale {
+    x: 2.5
+    y: 2.5
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_sound_white"
+  id: "btn_sound_background"
+  parent: "pause_root"
+  layer: "medium"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 225.0
+    y: 522.0
+  }
+  size {
+    x: 125.0
+    y: 14.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "volume_bar_bg"
+  parent: "pause_root"
+  layer: "medium"
+}
+nodes {
+  position {
+    x: 162.0
+    y: 522.0
+    z: 1.0
+  }
+  size {
+    x: 125.0
+    y: 14.0
+  }
+  color {
+    x: 0.101960786
+    y: 0.2
+    z: 0.6
+  }
+  type: TYPE_BOX
+  id: "volume_bar_fill"
+  pivot: PIVOT_W
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 147.0
+    y: 522.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  size {
+    x: 30.0
+    y: 30.0
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "dialogs"
+  id: "btn_volume_down"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 300.0
+    y: 522.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  size {
+    x: 30.0
+    y: 30.0
+  }
+  type: TYPE_TEXT
+  text: "+"
+  font: "dialogs"
+  id: "btn_volume_up"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 237.0
+    y: 559.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Musica"
+  font: "dialogs"
+  id: "text_volume_label"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 368.0
+    y: 523.0
+  }
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.6
+    y: 0.6
+    z: 0.6
+  }
+  type: TYPE_TEXT
+  text: "100%"
+  font: "dialogs"
+  id: "text_volume_pct"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 96.0
+    y: 431.0
+  }
+  scale {
+    x: 2.5
+    y: 2.5
+  }
+  type: TYPE_BOX
+  texture: "gui/icon_sound_white"
+  id: "btn_sfx_sound_background"
+  parent: "pause_root"
+  layer: "medium"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 225.0
+    y: 431.0
+  }
+  size {
+    x: 125.0
+    y: 14.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "sfx_bar_bg"
+  parent: "pause_root"
+  layer: "medium"
+}
+nodes {
+  position {
+    x: 162.0
+    y: 431.0
+    z: 1.0
+  }
+  size {
+    x: 125.0
+    y: 14.0
+  }
+  color {
+    x: 0.101960786
+    y: 0.2
+    z: 0.6
+  }
+  type: TYPE_BOX
+  id: "sfx_bar_fill"
+  pivot: PIVOT_W
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 147.0
+    y: 431.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  size {
+    x: 30.0
+    y: 30.0
+  }
+  type: TYPE_TEXT
+  text: "-"
+  font: "dialogs"
+  id: "btn_sfx_down"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 300.0
+    y: 431.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  size {
+    x: 30.0
+    y: 30.0
+  }
+  type: TYPE_TEXT
+  text: "+"
+  font: "dialogs"
+  id: "btn_sfx_up"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 237.0
+    y: 470.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Efectos de sonido"
+  font: "dialogs"
+  id: "text_sfx_label"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 368.0
+    y: 432.0
+  }
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.6
+    y: 0.6
+    z: 0.6
+  }
+  type: TYPE_TEXT
+  text: "100%"
+  font: "dialogs"
+  id: "text_sfx_pct"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 237.0
+    y: 377.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Unidades"
+  font: "dialogs"
+  id: "text_units_label"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 238.0
+    y: 316.0
+  }
+  size {
+    x: 70.0
+    y: 44.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_pause_green"
+  id: "btn_units"
+  parent: "pause_root"
+  layer: "medium"
+  slice9 {
+    x: 4.0
+    y: 4.0
+    z: 4.0
+    w: 4.0
+  }
+}
+nodes {
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "\302\260C"
+  font: "dialogs"
+  id: "btn_units_text"
+  parent: "btn_units"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 237.0
+    y: 245.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Mostrar FPS"
+  font: "dialogs"
+  id: "text_fps_label"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 239.0
+    y: 186.0
+  }
+  size {
+    x: 70.0
+    y: 44.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_pause_green"
+  id: "btn_fps"
+  parent: "pause_root"
+  layer: "medium"
+  slice9 {
+    x: 4.0
+    y: 4.0
+    z: 4.0
+    w: 4.0
+  }
+}
+nodes {
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "\303\255"
+  font: "dialogs"
+  id: "btn_fps_text"
+  parent: "btn_fps"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 1028.0
+    y: 554.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Importar / Exportar"
+  font: "dialogs"
+  id: "text_file_game"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 634.0
+    y: 559.0
+  }
+  scale {
+    x: 0.3
+    y: 0.3
+  }
+  size {
+    x: 250.0
+    y: 100.0
+  }
+  color {
+    x: 0.8
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_TEXT
+  text: "Idioma"
+  font: "dialogs"
+  id: "text_language"
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 642.0
+    y: 498.0
+  }
+  size {
+    x: 250.0
+    y: 64.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_pause_green"
+  id: "btn_lan"
+  parent: "pause_root"
+  layer: "medium"
+  slice9 {
+    x: 4.0
+    y: 4.0
+    z: 4.0
+    w: 4.0
+  }
+}
+nodes {
+  position {
+    y: -32.0
+  }
+  size {
+    x: 250.0
+    y: 75.0
+  }
+  color {
+    x: 0.6
+    y: 0.8
+    z: 0.8
+  }
+  type: TYPE_BOX
+  id: "header_background"
+  pivot: PIVOT_N
+  parent: "btn_lan"
+  layer: "medium"
+}
+nodes {
+  position {
+    y: -69.5
+  }
+  size {
+    x: 250.0
+    y: 64.0
+  }
+  color {
+    x: 0.4
+    y: 0.6
+    z: 0.6
+  }
+  type: TYPE_BOX
+  texture: "gui/button_pause_green"
+  id: "option_01"
+  parent: "btn_lan"
+  layer: "top"
+  slice9 {
+    x: 4.0
+    y: 4.0
+    z: 4.0
+    w: 4.0
+  }
+}
+nodes {
+  position {
+    y: -69.5
+  }
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "option_01_text"
+  parent: "btn_lan"
+  layer: "top"
+}
+nodes {
+  scale {
+    x: 0.35
+    y: 0.35
+  }
+  size {
+    x: 200.0
+    y: 100.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "btn_lan_title"
+  parent: "btn_lan"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 648.0
+  }
+  scale {
+    x: 0.4
+    y: 0.4
+  }
+  size {
+    x: 1200.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_info"
+  line_break: true
+  parent: "pause_root"
+  layer: "top"
+}
+nodes {
+  position {
+    x: 982.0
+    y: 490.0
+  }
+  scale {
+    x: 2.0
+    y: 2.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_import"
+  id: "btn_import"
+  parent: "pause_root"
+  layer: "top"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1068.0
+    y: 490.0
+  }
+  scale {
+    x: 2.0
+    y: 2.0
+  }
+  type: TYPE_BOX
+  texture: "gui/button_export"
+  id: "btn_export"
+  parent: "pause_root"
+  layer: "top"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1122.0
+    y: 106.0
+  }
+  scale {
+    x: 0.6
+    y: 0.6
+  }
+  type: TYPE_BOX
+  texture: "gui/logo_nosinmipixel"
+  id: "box_logo"
+  parent: "pause_root"
+  layer: "medium"
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 1120.5
+    y: 64.5
+  }
+  scale {
+    x: 0.25
+    y: 0.25
+  }
+  size {
+    x: 300.0
+    y: 100.0
+  }
+  type: TYPE_TEXT
+  text: "\303\201ngel S\303\241nchez, 2026"
+  font: "dialogs"
+  id: "text_name"
+  parent: "pause_root"
+  layer: "medium"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 390.0
+  }
+  scale {
+    x: 0.5
+    y: 0.5
+  }
+  size {
+    x: 2560.0
+    y: 1560.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "pause_background"
+  adjust_mode: ADJUST_MODE_ZOOM
+  layer: "background"
+  alpha: 0.85
+}
+layers {
+  name: "background"
+}
+layers {
+  name: "medium"
+}
+layers {
+  name: "top"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

@@ -1,0 +1,196 @@
+-- features/props/food_cat_can.script
+-- ═══════════════════════════════════════════════════════
+-- 🥫 LATA DE COMIDA PARA GATO (food_cat_can)
+-- ═══════════════════════════════════════════════════════
+--
+--   a) On hover: Tintado del sprite (iluminar).
+--   b) On clic:
+--      - Si cat_food_count = 0: incrementa a 1, reproduce pick_up.sound,
+--        notifica al food_spawn_container y se autodestruye.
+--      - Si cat_food_count >= 1: muestra alerta de "ya tienes una".
+--
+--   c) 🗄️ Ocultación por armario (Ago 2026, MISMO PATRÓN que spray_can — ver
+--      GOTCHA #31): la lata consulta cabinet_state.get_open(pos) en update():
+--      dentro de un armario CERRADO → sprite y colisiones DESACTIVADAS (ni
+--      hover ni clic posibles); se ACTIVA cuando la animación de apertura
+--      finaliza y se desactiva si cierran la puerta sin recogerla. Las latas
+--      fuera de armarios están siempre activas. Obligatorio: los tres spawns
+--      del nivel (food_spawn_01..03) caen dentro de armarios — sin esto la
+--      lata se veía con las puertas cerradas.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-18
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+local text_loader = require "main.text_loader"
+local food_state = require "main.food_spawn_state"
+local cabinet_state = require "main.cabinet_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_FOOD_CAT_CAN = false
+local dprint = config.make_log(DEBUG_FOOD_CAT_CAN)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): set_active se define MÁS ABAJO pero se
+--    llama desde init()/update() (que van antes). Forward declaration: los
+--    callers la capturan como upvalue y la definición posterior asigna a este
+--    local (function X, sin 'local').
+local set_active
+
+-- 🌐 Recarga los hints localizados (text_alert). Definida ANTES de init para
+--    que init y el callback de idioma la capturen como upvalue (GOTCHA #1).
+local function load_hints(self)
+	local general_texts = text_loader.load("general") or {}
+	self.hint_pickup = (general_texts.tutorials and general_texts.tutorials.hint_cat_food_pickup)
+		or "¡Has encontrado una lata de comida para gatos!"
+	self.hint_full = (general_texts.tutorials and general_texts.tutorials.hint_cat_food_full)
+		or "Ya tienes una lata de comida de gato. Úsala antes de recoger otra."
+end
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.sprite_url = msg.url(nil, nil, "sprite")
+
+	-- 🔗 URL del HUD cacheada (regla #4)
+	self.hud_url = msg.url("/gui#hud")
+
+	-- Leer el spawn_index desde el módulo compartido
+	if food_state.pending_spawn then
+		self.spawn_index = food_state.pending_spawn.index
+		food_state.pending_spawn = nil
+	else
+		self.spawn_index = nil
+	end
+
+	load_hints(self)
+
+	-- 🗄️ URLs de componentes para activar/desactivar (ocultación por armario):
+	--    desactivado = sprite + colisiones off → sin hover ni clic posibles.
+	self.collision_cursor_url = msg.url(nil, nil, "collisionobject_cursor")
+	self.collision_player_url = msg.url(nil, nil, "collisionobject_player")
+
+	-- 🗄️ Estado de hover (para limpiarlo si el armario se cierra encima)
+	self.is_hovered = false
+
+	-- 🗄️ Estado de visibilidad inicial: los armarios ya se registraron en su
+	--    init() (colección cargada antes que cualquier factory.create), así que
+	--    se puede calcular aquí — una lata que nace dentro de un armario
+	--    CERRADO arranca DESACTIVADA (sprite + colisiones apagadas desde el
+	--    primer frame, sin parpadeo). Las latas FUERA de armarios (get_open =
+	--    nil) nacen activas y siempre visibles.
+	set_active(self, cabinet_state.get_open(go.get_position()) ~= false)
+
+	-- 🌐 Recargar hints si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_hints(self)
+		dprint("[food_cat_can] Hints recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+end
+
+function update(self, dt)
+	-- 🗄️ Ocultación por armario (mismo patrón que spray_can): la lata se
+	--    activa/desactiva según el estado de SU armario — activación cuando la
+	--    animación de apertura finaliza (cabinet_state.set_open en el callback
+	--    del flipbook) y desactivación al cerrar la puerta sin recogerla.
+	--    Desactivada = sprite + colisiones deshabilitadas → sin hover ni clic
+	--    posibles. Las latas fuera de armarios (get_open = nil) están siempre
+	--    activas.
+	local should_active = cabinet_state.get_open(go.get_position()) ~= false
+	if should_active ~= self.active then
+		set_active(self, should_active)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: ANIMACIÓN DE TINT (sin escalado)
+-- ═══════════════════════════════════════════════════════
+-- 📏 Ago 2026: el gate de distancia se unificó en los HUBS (cursor.script /
+-- mobile_interact.script, interaction_range global de main/config.lua) —
+-- el hover y el clic aquí solo llegan con el jugador dentro del rango.
+
+local function set_hover_state(self, is_hovered)
+	if is_hovered then
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.3, 1.3, 1.2, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	else
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	end
+end
+
+-- 🗄️ Aplica el estado de visibilidad de la lata (sprite + colisiones on/off).
+--    Desactivada = sin hover ni clic posibles (la física 2D ya ni lo detecta).
+--    Al desactivar se limpia el hover pendiente (GOTCHA #13): si el armario se
+--    cerró con el cursor encima no llega mouse_hover exit — resetear el tint
+--    para que no quede iluminada al reaparecer con las puertas abiertas.
+function set_active(self, active)
+	self.active = active
+	if active then
+		msg.post(self.sprite_url, "enable")
+		msg.post(self.collision_cursor_url, "enable")
+		msg.post(self.collision_player_url, "enable")
+	else
+		if self.is_hovered then
+			set_hover_state(self, false)
+		end
+		msg.post(self.sprite_url, "disable")
+		msg.post(self.collision_cursor_url, "disable")
+		msg.post(self.collision_player_url, "disable")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- 🗄️ Lata oculta tras un armario CERRADO (sprite + colisiones desactivadas):
+	--    no puede recibir hover ni clic — los eventos no llegan porque la
+	--    colisión está deshabilitada. Guardia defensiva por si llegara un
+	--    mensaje residual (p. ej. exit de física al desactivar).
+	if not self.active then return end
+
+	if message_id == hash("mouse_hover") then
+		-- 📏 El rango ya lo aplican los hubs (interaction_range) — el hover
+		-- solo llega con el jugador cerca.
+		set_hover_state(self, message.enter)
+
+	elseif message_id == hash("interact") then
+		-- 📏 El rango ya lo aplican los hubs (interaction_range).
+
+		local cat_food_count = tonumber(game_state.get_global("cat_food_count") or 0)
+
+		if cat_food_count < 1 then
+			-- Recoger la lata
+			game_state.set_global("cat_food_count", 1)
+			sound.play("#pick_up")
+			dprint("[food_cat_can] Lata recogida (spawn #" .. tostring(self.spawn_index) .. ")")
+
+			-- Notificar al contenedor
+			if food_state.container_url then
+				msg.post(food_state.container_url, "food_picked_up", {
+					spawn_index = self.spawn_index
+				})
+			end
+
+			-- Mostrar alerta en HUD
+			msg.post(self.hud_url, "show_alert", {
+				text = self.hint_pickup
+			})
+
+			-- Autodestruirse
+			go.delete()
+		else
+			-- Ya tiene una lata
+			msg.post(self.hud_url, "show_alert", {
+				text = self.hint_full
+			})
+			dprint("[food_cat_can] Jugador ya tiene una lata (count=" .. cat_food_count .. ")")
+		end
+	end
+end

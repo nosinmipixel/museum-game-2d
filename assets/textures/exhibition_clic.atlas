@@ -1,0 +1,217 @@
+images {
+  image: "/assets/textures/exhibition_clic/16061.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/20_21.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/132.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/132_2.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/248.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/855.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/1905.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/1911.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/2899.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/3098.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/3662.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/4225.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/4302.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/4946.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/4947.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/4948.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5090.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5094.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5099.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5099_2.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5117.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5140.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5267.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5271.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/6209.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/6350.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/6560.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/7622.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/7634.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/13570.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/13588.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/16121.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/17109.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/17110.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/17727.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/17757.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18125.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18169.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18558.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18649.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18704.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/18888.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/19002.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/19014.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/19635.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/20045.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/20175.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/20507.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/22253.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/22354.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/23871_23882.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/23982.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/23983.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/24008.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/24226.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/43452.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/43666.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/43737.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/45681.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/15741.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/100002.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/100003.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/100004.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/100005.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/0000.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/5225.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/13590.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/3541.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/23871.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/23981.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/13561.png"
+}
+images {
+  image: "/assets/textures/exhibition_clic/13564.png"
+}
+extrude_borders: 2

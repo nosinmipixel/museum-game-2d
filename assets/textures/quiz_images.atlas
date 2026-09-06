@@ -1,0 +1,46 @@
+images {
+  image: "/assets/textures/quiz/Q1_Barniz_Negro_855-9.png"
+}
+images {
+  image: "/assets/textures/quiz/Q2_63351_bifaz.png"
+}
+images {
+  image: "/assets/textures/quiz/Q3_Materiales_Paleo.png"
+}
+images {
+  image: "/assets/textures/quiz/Q4_Coins_Iber.png"
+}
+images {
+  image: "/assets/textures/quiz/Q5_Tecnica_Neo.png"
+}
+images {
+  image: "/assets/textures/quiz/Q6_Ceram_Neo.png"
+}
+images {
+  image: "/assets/textures/quiz/Q7_Tecnica_Bronce.png"
+}
+images {
+  image: "/assets/textures/quiz/Q8_Pottery_Bronze.png"
+}
+images {
+  image: "/assets/textures/quiz/Q9_248_Empuries.png"
+}
+images {
+  image: "/assets/textures/quiz/Q10_4060_estatera_romana.png"
+}
+images {
+  image: "/assets/textures/quiz/QB_01.png"
+}
+images {
+  image: "/assets/textures/quiz/QB_02.png"
+}
+images {
+  image: "/assets/textures/quiz/QB_03.png"
+}
+images {
+  image: "/assets/textures/quiz/QB_04.png"
+}
+images {
+  image: "/assets/textures/quiz/QB_05.png"
+}
+extrude_borders: 2

@@ -1,0 +1,172 @@
+-- main/exhibition_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 🏛️ GESTOR DE EXHIBICIÓN
+-- ═══════════════════════════════════════════════════════
+--
+--   Controla la ficha del objeto de exhibición: recibe el
+--   id desde el objeto, carga sus datos y muestra/oculta/
+--   reposiciona el panel de la GUI.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "display_gui_info"/"update_position"/"close_info" (GUI)
+--   Mensajes que RECIBE (on_message):
+--     ← "start_exhibition_info" (desde exhibition_object)
+--     ← "exhibition_closed"/"close_exhibition"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local screen_utils = require "main.screen_utils"
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+
+-- 🔧 DEBUG [EXHIBICIÓN]: cambiar a true para activar los logs del gestor de exhibición.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_EXHIBITION = false
+local dprint = config.make_log(DEBUG_EXHIBITION)
+
+local WARMUP_TIME = 0.15
+
+function init(self)
+	self.exhibition_data = {}
+	self.current_object_id = nil
+	self.is_panel_open = false
+	self.closing_lock = false  -- Evita reabrir inmediatamente después de cerrar
+	self.timer = 0
+	self.is_warmed_up = false
+	self.update_counter = 0
+	self.panel_open_time = 0  -- Tiempo que el panel lleva abierto (para evitar cierre inmediato)
+	self.anchor_offset = 0  -- 📏 Offset del ancla del globo (media altura del sprite, uds mundo); lo envía exhibition_object al abrir
+
+	-- Cargar textos según el idioma actual
+	local lang = text_loader.get_current_lang()
+	self.exhibition_data = text_loader.load("exhibition", lang)
+	dprint("Textos de exposición cargados para idioma: " .. lang)
+
+	-- Recargar textos si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		self.exhibition_data = text_loader.reload("exhibition", new_lang)
+		dprint("[Exhibition Manager] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+end
+
+function update(self, dt)
+	if not self.is_warmed_up then
+		self.timer = self.timer + dt
+		if self.timer >= WARMUP_TIME then self.is_warmed_up = true end
+		return
+	end
+
+	if self.is_panel_open and self.current_object_id then
+		self.update_counter = self.update_counter + 1
+
+		if self.update_counter >= 2 then
+			self.update_counter = 0
+
+			local obj_url = msg.url(nil, self.current_object_id, nil)
+			if go.exists(obj_url) then
+				local world_pos = go.get_position(obj_url)
+
+				-- 🔥 COMPROBAR DISTANCIA del JUGADOR al objeto para cerrar
+				local player_url = msg.url("/player")
+				local player_pos = go.exists(player_url) and go.get_position(player_url) or vmath.vector3(0,0,0)
+				local dist_to_player = vmath.length(player_pos - world_pos)
+				self.panel_open_time = self.panel_open_time + (dt * 2)  -- dt * 2 porque este bloque se ejecuta cada 2 updates
+
+				-- No cerrar inmediatamente: dar tiempo mínimo de 1.5s para que el jugador lea
+				if self.panel_open_time >= 1.5 then
+					if go.exists(player_url) then							if dist_to_player > 300 then
+								dprint("🚶 [Exhibition Manager] El jugador se alejó >300 (distancia=" .. string.format("%.1f", dist_to_player) .. "). Cerrando panel.")
+								msg.post("/gui#exhibition", "close_info", {})
+								self.is_panel_open = false
+								self.current_object_id = nil
+								return -- Salimos para no enviar la actualización de posición
+							end
+					end
+				end
+				-- 🔥 FIN COMPROBACIÓN DISTANCIA
+
+				-- 📏 Ago 2026: el follow usa el MISMO anchor_offset que el objeto envió
+				-- al abrir (si no, el globo saltaría al empezar el seguimiento). Los
+				-- paneles abiertos sin offset (NPCs/objetos de vitrina completados)
+				-- mantienen el ancla histórica (centro del GO).
+				local screen_pos = screen_utils.world_to_screen(world_pos, self.anchor_offset)
+
+				msg.post("/gui#exhibition", "update_position", {
+					screen_pos = screen_pos
+				})
+			else
+				dprint("⚠️ [Exhibition Manager] Objeto desaparecido, cerrando panel")
+				msg.post("/gui#exhibition", "close_info", {})
+				self.is_panel_open = false
+				self.current_object_id = nil
+			end
+		end
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if not self.is_warmed_up then return end
+
+	if message_id == hash("start_exhibition_info") then
+		-- 🔒 Evitar reabrir si se acaba de cerrar (ej: clic en objeto mientras panel abierto)
+		if self.closing_lock then return end
+		local target_id = message.object_id
+		local screen_pos = message.screen_pos
+		local world_pos = message.world_pos 
+
+		if not target_id or not screen_pos then
+			dprint("❌ [Exhibition Manager] Datos incompletos")
+			return
+		end
+
+		local matched_object = nil
+		local numeric_id = tonumber(target_id:match("%d+"))
+
+		for _, item in ipairs(self.exhibition_data) do
+			local item_id = tonumber(tostring(item.id):match("%d+"))
+			if item_id == numeric_id or tostring(item.id) == target_id then
+				matched_object = item
+				break
+			end
+		end
+
+		if matched_object then
+			-- Usar game_object_id (nombre real del GO) para tracking de posición,
+			-- NO object_id (ID numérico del dato). Ej: collectible_object vs 16061
+			self.current_object_id = message.game_object_id or target_id
+			self.is_panel_open = true
+			self.update_counter = 0
+			self.panel_open_time = 0  -- Reiniciar timer al abrir el panel
+			self.anchor_offset = message.anchor_offset or 0
+
+			msg.post("/gui#exhibition", "display_gui_info", { 
+				item = matched_object,
+				screen_pos = screen_pos,
+				world_pos = world_pos 
+			})
+			dprint("✅ [Exhibition Manager] Enviando info para: " .. tostring(matched_object.id))
+		else
+			dprint("❌ [Exhibition Manager] No se encontró el objeto con ID: " .. target_id)
+		end
+
+	elseif message_id == hash("close_exhibition") then
+		self.closing_lock = true
+		timer.delay(0.25, false, function() self.closing_lock = false end)
+		self.is_panel_open = false
+		self.current_object_id = nil
+		self.anchor_offset = 0
+		msg.post("/gui#exhibition", "close_info", {})
+
+	elseif message_id == hash("exhibition_closed") then
+		self.closing_lock = true
+		timer.delay(0.25, false, function() self.closing_lock = false end)
+		self.is_panel_open = false
+		self.current_object_id = nil
+		self.anchor_offset = 0
+		dprint("🔒 [Exhibition Manager] Panel confirmado como cerrado")
+	end
+end

@@ -1,0 +1,762 @@
+-- main/dialogue_manager.script
+-- ═══════════════════════════════════════════════════════
+-- 💬 GESTOR DE DIÁLOGOS
+-- ═══════════════════════════════════════════════════════
+--
+--   Orquesta las conversaciones jugador↔NPC: avance por timers,
+--   quiz (3 intentos), disponibilidad/cooldown (npc_11) y
+--   globos de "no disponible". Reenvía todo a interactive.gui.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "start_talking"/"stop_talking"/"npc_state_changed" (NPC)
+--     → "cancel_quiz"      (hacia /gui#interactive)
+--     → "play_event"/"stop_event" (hacia audio)
+--   Mensajes que RECIBE (on_message):
+--     ← "start_conversation"/"continue_dialog"/"cancel_dialog"
+--     ← "quiz_result"/"npc_unavailable"/"dialog_cancelled"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local screen_utils = require "main.screen_utils"
+local config = require "main.config"
+local text_loader = require "main.text_loader"
+local npc_spawn_state = require "main.npc_spawn_state" -- 🛠️ URL real y TIPO de cada NPC (flujo de restauración, icono)
+local enemy_state = require "main.enemy_state" -- 🪳 Limpiar enemigos al iniciar diálogo (clear_alive + waves_paused)
+
+-- 🔧 DEBUG [DIÁLOGO]: cambiar a true para activar los logs del gestor de diálogos.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_DIALOGUE = false
+local dprint = config.make_log(DEBUG_DIALOGUE)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): estas funciones están definidas MÁS ABAJO en
+-- el archivo pero son llamadas por init/on_message y por locales tempranas
+-- (prepare_dialog_text → get_speaker_name, manage_advance_timers → start_quiz
+-- / advance_to_next). Forward declaration: los callers las capturan como
+-- upvalues y las definiciones posteriores 'function X(self)' asignan a estos
+-- locales (patrón establecido en Fases 1/2).
+local load_json
+local start_conversation
+local show_current_dialog
+local advance_to_next
+local start_quiz
+local on_quiz_result
+local schedule_restoration_alert
+local cancel_dialog
+local end_conversation
+local show_unavailable_message
+local get_speaker_name
+
+-- ============================================
+-- FUNCIONES LOCALES
+-- ============================================
+
+-- Mover aquí arriba para que hide_bubbles pueda verla
+local function stop_current_dialog_sound(self)
+	if self.current_sound_url then
+		sound.stop(self.current_sound_url)
+		dprint("🔇 AUDIO: Loop de diálogo detenido de forma limpia.")
+		self.current_sound_url = nil
+	end
+end
+
+-- De paso movemos esta que está relacionada
+local function play_dialog_sound(self, current_node)
+	-- 1. Si ya había un sonido reproduciéndose en el diálogo anterior, lo detenemos primero
+	if self.current_sound_url then
+		sound.stop(self.current_sound_url)
+		self.current_sound_url = nil
+	end
+
+	-- 2. Verificar si el nodo actual del JSON tiene un sonido asignado
+	if current_node and current_node.sound and current_node.sound ~= "" then
+		-- CORRECCIÓN: Usamos la ruta limpia directamente del JSON ya que incluye la barra "/"
+		local sound_path = current_node.sound
+		local sound_url = msg.url(sound_path)
+
+		-- 3. Guardar la referencia en el estado del script para poder detenerlo luego
+		self.current_sound_url = sound_url
+
+		-- 4. Reproducir el sonido en loop
+		sound.play(sound_url, { gain = 1.0 })
+		dprint("🔊 AUDIO: Iniciando loop de diálogo -> " .. sound_path)
+	end
+end
+
+local function hide_bubbles(self)
+	-- 💡 NUEVO: Le pedimos al HUD que limpie los globos de la interfaz
+	msg.post(self.gui_url, "hide_gui_dialog")
+	stop_current_dialog_sound(self)
+end
+
+-- 🎭 Función para detener animaciones de habla
+local function stop_talking_animations(self)
+	if self.current_dialog_node and self.current_dialog_node.speaker then
+		local speaker = self.current_dialog_node.speaker
+		if speaker == "player" then
+			msg.post(self.player_url, "stop_talking")
+		elseif self.current_npc then
+			local npc_url = msg.url(nil, "/" .. self.current_npc, nil)
+			if go.exists(npc_url) then
+				msg.post(npc_url, "stop_talking")
+			end
+		end
+	end
+end
+
+-- ============================================
+-- FUNCIONES AUXILIARES DE show_current_dialog
+-- ============================================
+
+-- 🎭 Inicia animación de habla del personaje que habla
+local function handle_speaker_animation(self, speaker)
+	if speaker == "player" then
+		msg.post(self.player_url, "start_talking")
+	else
+		local npc_url = msg.url(nil, "/" .. self.current_npc, nil)
+		if go.exists(npc_url) then
+			msg.post(npc_url, "start_talking")
+		end
+	end
+end
+
+-- 📝 Prepara el texto completo: reemplaza \n reales y antepone el nombre del hablante
+local function prepare_dialog_text(self, node, speaker)
+	local text = string.gsub(node.text, "\\n", "\n")
+	local speaker_name = get_speaker_name(self, speaker)
+	return speaker_name .. ": " .. text
+end
+
+-- 📍 Calcula la posición en pantalla del personaje que habla
+local function calculate_screen_position(self, speaker)
+	local target_go_url
+	if speaker == "player" then
+		target_go_url = msg.url(nil, "/player", nil)
+	else
+		target_go_url = msg.url(nil, "/" .. self.current_npc, nil)
+	end
+
+	if go.exists(target_go_url) then
+		local go_pos = go.get_position(target_go_url)
+
+		-- 📏 Ago 2026: mismo criterio que el globo de exhibición — el globo se
+		-- ancla al BORDE SUPERIOR del sprite del personaje, no al centro del
+		-- GO. El sprite del cuerpo es SIZE_MODE_AUTO (tamaño = frame actual):
+		-- player → "sprite", NPC → "sprite_anim". Frames idle/talk 96×80 sin
+		-- escala → media altura = 40 uds (el globo sube 40 uds sobre el GO).
+		-- Si la lectura falla, ancla al centro del GO (comportamiento histórico).
+		local sprite_id = (speaker == "player") and "sprite" or "sprite_anim"
+		local sprite_url = msg.url(nil, target_go_url.path, sprite_id)
+		local anchor_offset = 0
+		if go.exists(sprite_url) then
+			local sprite_size = go.get(sprite_url, "size")
+			anchor_offset = (sprite_size.y * go.get_scale(sprite_url).y * go.get_scale(target_go_url).y) * 0.5
+		end
+		return screen_utils.world_to_screen(go_pos, anchor_offset)
+	end
+	return vmath.vector3(0, 0, 0)
+end
+
+-- ⏱️ Gestiona timers: quiz o avance automático con warmup + typewriter delay
+local function manage_advance_timers(self, node)
+	if self.advance_timer then timer.cancel(self.advance_timer) self.advance_timer = nil end
+	if self.warmup_timer then timer.cancel(self.warmup_timer) self.warmup_timer = nil end
+
+	if node.is_quiz then
+		self.waiting_quiz = true
+		start_quiz(self, node.start_quiz, node.what_question)
+	else
+		-- Temporizador de calentamiento para evitar pulsaciones accidentales
+		self.warmup_timer = timer.delay(0.3, false, function()
+			self.warmup_timer = nil
+			self.can_advance = true
+		end)
+
+		-- 💡 CÁLCULO DINÁMICO REPARADO PARA LUA 5.1:
+		-- Contamos caracteres UTF-8 usando gmatch en lugar de utf8.len
+		local dialog_text = string.gsub(node.text, "\\n", "\n")
+		local _, text_length = string.gsub(dialog_text, "[%z\1-\127\194-\244][\128-\191]*", "")
+
+		local time_to_write = text_length * 0.03
+		local total_wait_time = time_to_write + 1.5
+
+		self.advance_timer = timer.delay(total_wait_time, false, function()
+			self.advance_timer = nil
+			advance_to_next(self)
+		end)
+	end
+end
+
+-- ============================================
+-- 🖥️ LISTENER GLOBAL DE VENTANA (RESIZE/FULLSCREEN)
+-- ============================================
+--
+--   Defold solo permite UN listener global (cada window.set_listener reemplaza
+--   al anterior). Este gestor es el dueño porque es el único que conoce al
+--   hablante actual y su posición en el mundo. Al redimensionar (fullscreen
+--   HTML5), recalcula la posición del globo con el nuevo tamaño de ventana y
+--   avisa a la GUI con un mensaje ligero que NO reinicia el typewriter.
+--   (Ver GOTCHA #6 en docs/DEV_GOTCHAS.md)
+-- ============================================
+
+local function on_window_event(self, event, data)
+	-- HTML5: en algunos navegadores el fullscreen entrega WINDOW_EVENT_RESIZED solo
+	-- después de WINDOW_EVENT_FOCUS_GAINED, así que re-anclamos en ambos eventos.
+	if event == window.WINDOW_EVENT_RESIZED or event == window.WINDOW_EVENT_FOCUS_GAINED then
+		-- Solo si hay diálogo activo, no estamos en quiz y el nodo tiene hablante
+		if self.active and not self.waiting_quiz and self.current_dialog_node and self.current_dialog_node.speaker then
+			local speaker = self.current_dialog_node.speaker
+			msg.post(self.gui_url, "reposition_dialog", {
+				speaker = speaker,
+				screen_pos = calculate_screen_position(self, speaker)
+			})
+			dprint("🖥️ [Dialogue Manager] Evento de ventana (resize/focus); re-anclando globo del hablante: " .. tostring(speaker))
+		end
+	end
+end
+
+-- ============================================
+-- MÉTODOS DEL SCRIPT
+-- ============================================
+
+-- 🚶 Umbral de movimiento del jugador (uu) para ocultar el globo de "no
+-- disponible": el globo está anclado a la posición del NPC en el momento del
+-- clic (la GUI no lo re-ancla), así que si el jugador se mueve, el globo queda
+-- flotando en un punto sin sentido. Ocultarlo al detectar movimiento es más
+-- simple y robusto que re-anclarlo cada frame.
+-- Umbral configurable en main/config.lua → M.balance
+-- .unavailable_bubble_move_hide_threshold
+local MOVE_HIDE_THRESHOLD = config.balance.unavailable_bubble_move_hide_threshold or 5.0
+-- Cuadrado del umbral: comparación por componentes en update() sin alocar (§1).
+-- Derivado del valor config en tiempo de carga (si el umbral cambia, el
+-- cuadrado se recalcula solo).
+local MOVE_HIDE_THRESHOLD_SQR = MOVE_HIDE_THRESHOLD * MOVE_HIDE_THRESHOLD
+
+-- 🛠️ NPCs de quiz de RESTAURACIÓN (tipo quiz_restoration, ver main/npc.script):
+--    flujo de restauración del inventario. Su quiz (pool_2) resuelve la
+--    restauración del objeto activo (ver game_state.register_restoration_success/
+--    failure y el gate en npc.script). El NPC afectado se identifica por su
+--    TIPO registrado en npc_spawn_state — nunca por id hardcodeado.
+
+-- 💬 Duración del globo de "no disponible": el NPC de restauración explica
+--    el flujo de restauración, así que su mensaje necesita más tiempo de
+--    lectura (4.5s) que el genérico del resto de NPCs (2.5s).
+--    Valores configurables en main/config.lua → M.balance
+--    (unavailable_bubble_duration / restorer_unavailable_bubble_duration).
+local UNAVAILABLE_BUBBLE_DURATION = config.balance.unavailable_bubble_duration or 2.5
+local RESTORER_UNAVAILABLE_BUBBLE_DURATION = config.balance.restorer_unavailable_bubble_duration or 4.5
+
+-- 🧩 Tipo del NPC afectado (fallback quiz_general si aún no está registrado).
+--    Los NPCs registran su tipo en init() (antes del primer update), así que
+--    en cualquier handler de mensaje el tipo ya está disponible.
+local function get_npc_type(npc_id)
+	return npc_spawn_state.get_npc_type(npc_id) or npc_spawn_state.NPC_TYPE_QUIZ_GENERAL
+end
+
+function init(self)
+	game_state.load()
+
+	-- En modo desarrollo, los NPCs se resetean para facilitar las pruebas
+	if config.DEV_MODE then
+		game_state.init_default_npc_progress()
+		dprint("🔧 DEV_MODE: Progreso de NPCs reiniciado para desarrollo")
+	end
+	profiler.enable_ui(false)
+	profiler.set_ui_view_mode(profiler.VIEW_MODE_MINIMIZED)
+
+	self.active = false
+	self.current_npc = nil
+	self.current_attempt_data = nil
+	self.current_dialog_node = nil
+	self.dialog_data = nil
+	self.waiting_quiz = false
+	self.advance_timer = nil
+	self.warmup_timer = nil
+	self.unavailable_timer = nil
+	self.unavailable_player_pos = nil  -- 🚶 posición del jugador al mostrar el globo
+	self.can_advance = false        
+	self.current_dialog_index = 0
+	self.is_talk_conversation = false -- 💬 charla de ambiente (npc_XX_talk_N)
+	self.talk_count = 0
+	self.restoration_alert_timer = nil -- 🛠️ aviso de disponibilidad de la restauradora
+
+	-- 🔗 URLs cacheadas (regla #4: resolver en init(), no hardcodear en handlers)
+	self.player_url = msg.url("/player")
+	self.gui_url = msg.url("/gui")
+	self.audio_url = msg.url("bootstrap:/audio_manager#manager")
+	-- 🛠️ URLs del flujo de restauración: inventario (marcar la pieza como
+	--    almacenable con "restoration_completed") y HUD (aviso de nuevo
+	--    intento de la restauradora).
+	self.inventory_url = msg.url("/inventory_manager")
+	self.hud_url = msg.url("/gui#hud")
+
+	-- 💬 Textos generales (mensajes de sistema localizados, ej. "no disponible")
+	self.general_texts = text_loader.load("general", text_loader.get_current_lang())
+
+	-- Cargar textos del idioma actual
+	load_json(self)
+	hide_bubbles(self)
+
+	-- 🖥️ Registrar el listener global de ventana (resize/fullscreen HTML5).
+	-- Es el ÚNICO listener global permitido por Defold: este gestor lo posee.
+	window.set_listener(on_window_event)
+
+	-- Recargar textos si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_json(self)
+		dprint("[Dialogue Manager] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	dprint("Dialogue Manager inicializado")
+end
+
+function final(self)
+	-- 🗣️ Red de seguridad: al destruirse el gestor, liberar el flag de
+	--    diálogo (el HUD reanuda los recordatorios).
+	game_state.set_dialog_active(false)
+	-- 🪳 Red de seguridad: si el gestor se destruye con un diálogo activo,
+	--    reactivar la emisión de enemigos (evita waves_paused eterno).
+	enemy_state.set_waves_paused(false)
+	if self.advance_timer then timer.cancel(self.advance_timer) end
+	if self.warmup_timer then timer.cancel(self.warmup_timer) end
+	if self.unavailable_timer then timer.cancel(self.unavailable_timer) end
+	if self.restoration_alert_timer then timer.cancel(self.restoration_alert_timer) end
+	self.unavailable_player_pos = nil
+	hide_bubbles(self)
+	stop_talking_animations(self)
+
+	-- Liberar el listener global de ventana (evita callback a script finalizado)
+	pcall(function() window.set_listener(nil) end)
+end
+function load_json(self)
+	-- Cargar textos según el idioma actual desde game_state
+	local lang = text_loader.get_current_lang()
+	self.dialog_data = text_loader.load("main", lang)
+	self.general_texts = text_loader.load("general", lang)
+	dprint("Textos cargados para idioma: " .. lang)
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("start_conversation") then
+		start_conversation(self, message.npc_id)
+
+	elseif message_id == hash("cancel_dialog") then
+		if self.active and not self.waiting_quiz then
+			cancel_dialog(self)
+		end
+
+	elseif message_id == hash("dialog_cancelled") then
+		cancel_dialog(self)
+
+	elseif message_id == hash("quiz_result") then
+		if self.waiting_quiz then
+			on_quiz_result(self, message.result, message.question_id)
+		end
+
+	elseif message_id == hash("continue_dialog") then
+		if self.active and not self.waiting_quiz and self.can_advance then
+			advance_to_next(self)
+		end
+
+	elseif message_id == hash("npc_unavailable") then
+		-- 💬 El NPC avisa de que no está disponible (intentos agotados o en
+		-- cooldown): mostramos el globo de diálogo. La GUI de diálogos la
+		-- centraliza este gestor (el NPC solo hace su tint rojo local).
+		if not self.active then
+			show_unavailable_message(self, message.npc_id)
+		end
+	end
+end
+
+function start_conversation(self, npc_id)
+	if self.active then
+		dprint("Ya hay un diálogo activo")
+		return
+	end
+
+	if not game_state.is_npc_available(npc_id) then
+		dprint("NPC " .. npc_id .. " no está disponible")
+		show_unavailable_message(self, npc_id)
+		return
+	end
+
+	local attempt = game_state.get_npc_attempt(npc_id)
+	local narrative = self.dialog_data and self.dialog_data.narrative
+	local block_name = npc_id .. "_attempt" .. attempt
+	local narrative_block = narrative and narrative[block_name]
+
+	-- 💬 CHARLA DE AMBIENTE (bibliotecaria, guardia y futuros NPCs):
+	--    cuando el NPC no tiene bloque _attemptN (no tiene quiz), se buscan
+	--    bloques npc_XX_talk_N y se alternan en ciclo (talk_1 -> talk_2 -> ...).
+	--    El número de bloques se cuenta dinámicamente: añadir un talk_3 mañana
+	--    solo requiere escribir el bloque en los textos, sin tocar este código.
+	self.is_talk_conversation = false
+	if not narrative_block then
+		local talk_prefix = npc_id .. "_talk_"
+		local num_talks = 0
+		if narrative then
+			for key in pairs(narrative) do
+				if key:sub(1, #talk_prefix) == talk_prefix then
+					num_talks = num_talks + 1
+				end
+			end
+		end
+		if num_talks == 0 then
+			dprint("No se encontró el bloque narrativo: " .. block_name)
+			return
+		end
+		local talk_index = game_state.get_npc_talk_index(npc_id)
+		block_name = talk_prefix .. ((talk_index % num_talks) + 1)
+		narrative_block = narrative[block_name]
+		self.is_talk_conversation = true
+		self.talk_count = num_talks
+	end
+
+	self.active = true
+	-- 🪳 Borrar enemigos vivos y pausar spawners durante el diálogo:
+	--    el jugador queda bloqueado (lock_dialog) y no puede defenderse.
+	--    clear_alive borra los existentes; waves_paused impide que los
+	--    spawners creen nuevos (el guard en spawn_enemies lo consulta
+	--    antes de cada creación). Se reactiva en cancel_dialog / end.
+	enemy_state.set_waves_paused(true)
+	enemy_state.clear_alive()
+	-- 🗣️ Marcar diálogo activo en game_state (RAM): el HUD pausa los
+	--    recordatorios mientras dura la interacción (incluye el quiz, que
+	--    mantiene active = true hasta end/cancel).
+	game_state.set_dialog_active(true)
+	self.current_npc = npc_id
+	self.current_attempt_data = narrative_block
+	self.current_dialog_node = narrative_block.dialog_1
+	self.current_dialog_index = 0
+
+	-- ⚠️ Cancelar el aviso de "no disponible" pendiente si lo hubiera (el
+	-- jugador pudo clicar un NPC no disponible y, dentro de la ventana de
+	-- 2,5 s, iniciar una conversación real): su timer stale ocultaría el
+	-- globo de esta conversación. (code review, Ago 2026)
+	if self.unavailable_timer then timer.cancel(self.unavailable_timer) self.unavailable_timer = nil end
+	self.unavailable_player_pos = nil
+
+	msg.post(self.player_url, "lock_dialog", { can_cancel = true })
+
+	show_current_dialog(self)
+
+	dprint("Iniciando conversación con " .. npc_id .. " (bloque: " .. block_name .. ")")
+end
+
+function show_current_dialog(self)
+	-- 1. Gestionar el audio del diálogo actual
+	play_dialog_sound(self, self.current_dialog_node)
+	if not self.current_dialog_node then
+		end_conversation(self)
+		return
+	end
+
+	-- 2. Determinar quién habla (player o npc)
+	local speaker = self.current_dialog_node.speaker
+	local node = self.current_dialog_node
+
+	-- 3. Iniciar animación de habla
+	handle_speaker_animation(self, speaker)
+	self.can_advance = false
+
+	-- 4. Preparar texto completo (nombre + diálogo con saltos de línea reales)
+	local full_text = prepare_dialog_text(self, node, speaker)
+
+	-- 5. Calcular posición del globo en pantalla
+	local bubble_screen_pos = calculate_screen_position(self, speaker)
+
+	-- 6. Enviar datos a la GUI
+	msg.post(self.gui_url, "show_gui_dialog", {
+		speaker = speaker,
+		full_text = full_text,
+		screen_pos = bubble_screen_pos
+	})
+
+	-- 7. Gestionar timers: quiz o avance automático con warmup
+	manage_advance_timers(self, node)
+end
+
+function advance_to_next(self, next_key)
+	if not self.active then return end
+
+	-- 🎭 DETENER ANIMACIÓN DE HABLA ANTES DE AVANZAR
+	stop_talking_animations(self)
+
+	local next_node_key = next_key or (self.current_dialog_node and self.current_dialog_node.next)
+
+	if not next_node_key then
+		end_conversation(self)
+		return
+	end
+
+	self.current_dialog_node = self.current_attempt_data[next_node_key]
+	show_current_dialog(self)
+end
+
+function start_quiz(self, pool_id, question_id)
+	dprint("Iniciando quiz - Pool: " .. pool_id .. ", Pregunta: " .. question_id)
+
+	-- 🎵 Evento de audio: quiz con NPC en curso (fondo de quiz en bucle
+	--    hasta que llegue el resultado o se cancele/termine la conversación).
+	msg.post(self.audio_url, "play_event", { id = "quiz" })
+
+	-- Enviamos el mensaje al componente de la GUI lateral (hud)
+	-- Cambia "/hud#quiz_manager" por la dirección real de tu componente .gui en la escena
+	msg.post(self.gui_url, "start_quiz", {
+		pool_id = pool_id,
+		question_id = question_id,
+		sender = go.get_id() -- Permite que el gestor de la GUI sepa a quién responder
+	})
+end
+
+-- 🛠️ Aviso de nuevo intento de un NPC de quiz de restauración: tras fallar
+-- con intentos restantes entra en cooldown (game_state). Programamos un
+-- timer simple con el cooldown real; al expirar se muestra el aviso
+-- alert_new_attempt_restoration por el HUD. Decisión de diseño aceptada: el
+-- timer no sobrevive a guardar/recargar a mitad de cooldown (el NPC sigue
+-- siendo accesible igualmente; solo se pierde el aviso proactivo).
+-- El npc_id se pasa explícitamente: cada NPC de restauración gestiona su
+-- propio cooldown y su propio aviso (sin ids hardcodeados).
+function schedule_restoration_alert(self, npc_id)
+	if self.restoration_alert_timer then
+		timer.cancel(self.restoration_alert_timer)
+		self.restoration_alert_timer = nil
+	end
+	local remaining = game_state.get_npc_cooldown_remaining(npc_id)
+	if remaining <= 0 then return end
+	self.restoration_alert_timer = timer.delay(remaining, false, function()
+		self.restoration_alert_timer = nil
+		-- 🛠️ El cooldown expiró: refrescar su icono de disponibilidad (vuelve a
+		-- verde si aún hay pieza en RESTORATION). URL real registrada por el
+		-- NPC (GOTCHA #4: nunca adivinar rutas).
+		local npc_url = npc_spawn_state.get_npc_url(npc_id)
+		if npc_url then
+			msg.post(npc_url, "npc_state_changed")
+		end
+		local alert_text = self.general_texts
+			and self.general_texts.tutorials
+			and self.general_texts.tutorials.alert_new_attempt_restoration
+		if alert_text then
+			-- 🔊 Aviso sonoro suave: mismo smooth_notification que los
+			--    recordatorios periódicos (componente montado en el objeto gui,
+			--    grupo sfx). El flag alert_sound lo pide el emisor y el HUD lo
+			--    toca al recibirlo (omitido si el jugador está en un diálogo).
+			msg.post(self.hud_url, "show_alert", { text = alert_text, alert_sound = true })
+		end
+	end)
+end
+
+function on_quiz_result(self, result, question_id)
+	self.waiting_quiz = false
+
+	-- 🎵 Fin del evento de quiz: el resultado llegó (éxito/fallo/timeout).
+	msg.post(self.audio_url, "stop_event", { id = "quiz" })
+
+	-- Determinar el NPC afectado antes de mostrar el siguiente diálogo
+	local affected_npc = self.current_npc
+
+	-- 🧩 El tipo del NPC afectado decide el flujo: restauración vs genérico.
+	local is_restoration_npc = (get_npc_type(affected_npc) == npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION)
+
+	if result == "success" then
+		sound.play("#quiz_success", { gain = 1.0 })
+		if is_restoration_npc then
+			-- 🛠️ NPC de restauración: punto de restauración
+			-- (task_restoration_total) + la pieza pasa a almacenable
+			-- (RESTORATION → STORAGE). No usa register_npc_success: no queda
+			-- "completed" ni suma a quiz total.
+			game_state.register_restoration_success(affected_npc)
+			msg.post(self.inventory_url, "restoration_completed")
+		else
+			game_state.register_npc_success(affected_npc)
+		end
+		self.current_dialog_node = self.current_attempt_data.success
+	else
+		sound.play("#quiz_failure", { gain = 1.0 })
+		if is_restoration_npc then
+			-- 🛠️ NPC de restauración: al agotar los 3 intentos acepta la pieza
+			--    igualmente (sin punto) y se resetea para el siguiente objeto
+			--    (justificado en el diálogo del intento 3). Con intentos
+			--    restantes: cooldown + aviso proactivo al volver.
+			local outcome = game_state.register_restoration_failure(affected_npc)
+			if outcome == "exhausted" then
+				msg.post(self.inventory_url, "restoration_completed")
+			else
+				schedule_restoration_alert(self, affected_npc)
+			end
+		else
+			game_state.register_npc_failure(affected_npc)
+		end
+		self.current_dialog_node = self.current_attempt_data.failure
+	end
+
+	-- 🚀 Notificar al NPC que su estado ha cambiado (en lugar de que haga polling cada frame)
+	local npc_url = msg.url(nil, "/" .. affected_npc, nil)
+	if go.exists(npc_url) then
+		msg.post(npc_url, "npc_state_changed")
+	end
+
+	show_current_dialog(self)
+end
+
+function cancel_dialog(self)
+	if not self.active then return end
+
+	-- 🎵 Si había un quiz en curso, su fondo también termina aquí.
+	msg.post(self.audio_url, "stop_event", { id = "quiz" })
+
+	if self.advance_timer then timer.cancel(self.advance_timer) self.advance_timer = nil end
+	if self.warmup_timer then timer.cancel(self.warmup_timer) self.warmup_timer = nil end
+	if self.unavailable_timer then timer.cancel(self.unavailable_timer) self.unavailable_timer = nil end
+	self.unavailable_player_pos = nil
+
+	self.active = false
+	self.waiting_quiz = false
+	-- 🗣️ Diálogo cancelado → desbloquear los recordatorios del HUD.
+	game_state.set_dialog_active(false)
+	-- 🪳 Reactivar emisión de enemigos al cancelar el diálogo
+	enemy_state.set_waves_paused(false)
+	hide_bubbles(self)
+	stop_current_dialog_sound(self)
+	stop_talking_animations(self) -- 🎭 Detener animaciones al cancelar
+
+	msg.post("/gui#interactive", "cancel_quiz")
+	msg.post(self.player_url, "dialog_cancelled_response")
+end
+
+function end_conversation(self)
+	-- 🎭 ASEGURARSE DE DETENER TODAS LAS ANIMACIONES
+	stop_talking_animations(self)
+
+	-- 💬 La charla de ambiente terminó de forma natural: alternar al siguiente
+	--    bloque talk (talk_1 -> talk_2 -> ...). Si el jugador cancela con Esc
+	--    (cancel_dialog), NO se avanza: repetirá la misma charla al volver.
+	local talk_npc_id = self.current_npc
+	if self.is_talk_conversation and talk_npc_id then
+		game_state.advance_npc_talk(talk_npc_id, self.talk_count or 1)
+	end
+	self.is_talk_conversation = false
+	self.talk_count = 0
+
+	self.active = false
+	self.waiting_quiz = false
+	-- 🗣️ Conversación terminada → desbloquear los recordatorios del HUD.
+	game_state.set_dialog_active(false)
+	-- 🪳 Reactivar emisión de enemigos al terminar la conversación
+	enemy_state.set_waves_paused(false)
+
+	-- 🎵 Red de seguridad: si un quiz quedara activo al terminar la
+	--    conversación (p. ej. cancelación por muerte del jugador), se retira
+	--    de la pila de audio. stop_event es idempotente (no-op si no está).
+	msg.post(self.audio_url, "stop_event", { id = "quiz" })
+	self.current_npc = nil
+	self.current_attempt_data = nil
+	self.current_dialog_node = nil
+
+	if self.advance_timer then timer.cancel(self.advance_timer) self.advance_timer = nil end
+	if self.warmup_timer then timer.cancel(self.warmup_timer) self.warmup_timer = nil end
+	if self.unavailable_timer then timer.cancel(self.unavailable_timer) self.unavailable_timer = nil end
+	self.unavailable_player_pos = nil
+
+	hide_bubbles(self)
+	stop_current_dialog_sound(self)
+	msg.post(self.player_url, "unlock_dialog")
+end
+
+function show_unavailable_message(self, npc_id)
+	-- 💬 El aviso se muestra por la GUI de diálogos (globo sobre el NPC) igual que
+	-- cualquier diálogo: misma posición (calculate_screen_position), mismo globo
+	-- y mismo auto-escalado móvil (Fase 7b). No hay game objects speech_bubble_*
+	-- en el proyecto (restos eliminados); la GUI es la única vía (GOTCHA #12).
+
+	-- El hablante es el NPC: temporalmente lo marcamos como "actual" para que
+	-- calculate_screen_position/get_speaker_name lo resuelvan por su id.
+	self.current_npc = npc_id
+
+	-- 🛠️ El NPC de quiz de restauración usa su mensaje específico (sin pieza
+	-- que restaurar o en cooldown). Para el resto: si el NPC de quiz genérico
+	-- ha AGOTADO sus intentos (completed / attempt > 3) ya no tiene más
+	-- preguntas → mensaje dedicado (npc_no_more_doubts); el cooldown temporal
+	-- tras fallar un quiz con turnos restantes conserva el genérico
+	-- (npc_unavailable).
+	local npc_progress = game_state.npc_progress[npc_id]
+	local exhausted = npc_progress and (npc_progress.completed == true or (npc_progress.attempt or 1) > 3)
+	local text_key
+	if get_npc_type(npc_id) == npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION then
+		text_key = "npc_restorer_unavailable"
+	elseif exhausted then
+		text_key = "npc_no_more_doubts"
+	else
+		text_key = "npc_unavailable"
+	end
+	local bubble_screen_pos = calculate_screen_position(self, npc_id)
+	local full_text = prepare_dialog_text(self, {
+		text = (self.general_texts and self.general_texts.dialogs and self.general_texts.dialogs[text_key])
+			or "No estoy disponible ahora. Vuelve más tarde."
+	}, npc_id)
+
+	msg.post(self.gui_url, "show_gui_dialog", {
+		speaker = npc_id,
+		full_text = full_text,
+		screen_pos = bubble_screen_pos
+	})
+
+	-- 📍 Posición del jugador al mostrar el globo: si se mueve, se oculta
+	-- (el globo no se re-ancla; ver update()). El jugador es el GO /player
+	-- de level_01 (misma URL que self.player_url y calculate_screen_position).
+	self.unavailable_player_pos = nil
+	if go.exists(self.player_url) then
+		self.unavailable_player_pos = go.get_position(self.player_url)
+	end
+
+	-- Auto-ocultar tras unos segundos (el aviso no tiene flujo de diálogo).
+	-- 🛠️ El NPC de quiz de restauración dura más: su mensaje explica el flujo
+	-- de restauración y necesita más tiempo de lectura (2.5s genérico vs 4.5s).
+	local bubble_duration = (get_npc_type(npc_id) == npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION)
+		and RESTORER_UNAVAILABLE_BUBBLE_DURATION or UNAVAILABLE_BUBBLE_DURATION
+	if self.unavailable_timer then timer.cancel(self.unavailable_timer) end
+	self.unavailable_timer = timer.delay(bubble_duration, false, function()
+		self.unavailable_timer = nil
+		self.unavailable_player_pos = nil
+		hide_bubbles(self)
+	end)
+end
+
+-- 🚶 Si el jugador se mueve mientras el globo de "no disponible" está visible,
+-- lo ocultamos (el globo está anclado a la posición del NPC en el momento del
+-- clic y no se re-ancla; ver MOVE_HIDE_THRESHOLD). El polling es barato y solo
+-- actúa en esta ventana temporal; durante un diálogo real el jugador está
+-- bloqueado (lock_dialog), así que no hay interferencia.
+function update(self, dt)
+	if self.unavailable_player_pos == nil then return end
+	if self.active then return end
+	if not go.exists(self.player_url) then return end
+
+	local player_pos = go.get_position(self.player_url)
+	-- Distancia al cuadrado por componentes (sin alocar — §1), equivalente
+	-- a `length > MOVE_HIDE_THRESHOLD` (ambos lados no negativos).
+	local dx = player_pos.x - self.unavailable_player_pos.x
+	local dy = player_pos.y - self.unavailable_player_pos.y
+	local moved_sqr = dx * dx + dy * dy
+	if moved_sqr > MOVE_HIDE_THRESHOLD_SQR then
+		self.unavailable_player_pos = nil
+		if self.unavailable_timer then timer.cancel(self.unavailable_timer) self.unavailable_timer = nil end
+		hide_bubbles(self)
+	end
+end
+
+function get_speaker_name(self, speaker_key)
+	-- 💬 El nombre viene SIEMPRE de characters (localizado por idioma). Los
+	-- fallbacks son el último recurso si faltaran los datos y NO son strings
+	-- hardcodeados en español (GOTCHA #20): el id del hablante es neutro en
+	-- cualquier idioma.
+	if speaker_key == "player" then
+		return self.dialog_data and self.dialog_data.characters.player.name or speaker_key
+	else
+		local npc_data = self.dialog_data and self.dialog_data.characters[speaker_key]
+		return npc_data and npc_data.name or speaker_key
+	end
+end

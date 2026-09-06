@@ -1,0 +1,424 @@
+images {
+  image: "/gui/Degradado_Cuadrado_pxArt.png"
+}
+images {
+  image: "/gui/icons/icon_bug.png"
+}
+images {
+  image: "/gui/icons/icon_drop.png"
+}
+images {
+  image: "/gui/icons/icon_heart.png"
+}
+images {
+  image: "/gui/icons/icon_script_text.png"
+}
+images {
+  image: "/gui/icons/icon_temperature.png"
+}
+images {
+  image: "/gui/icons/icon_restoration.png"
+}
+images {
+  image: "/gui/icons/icon_item.png"
+}
+images {
+  image: "/gui/icons/icon_quiz.png"
+}
+images {
+  image: "/gui/icons/icon_spray.png"
+}
+images {
+  image: "/gui/icons/icon_dialog_green.png"
+}
+images {
+  image: "/gui/icons/icon_dialog_red.png"
+}
+images {
+  image: "/gui/icons/button_green.png"
+}
+images {
+  image: "/gui/icons/button_gray.png"
+}
+images {
+  image: "/gui/icons/icon_period_bro.png"
+}
+images {
+  image: "/gui/icons/icon_period_ibe.png"
+}
+images {
+  image: "/gui/icons/icon_period_neo.png"
+}
+images {
+  image: "/gui/icons/icon_period_pal.png"
+}
+images {
+  image: "/gui/icons/icon_period_rom.png"
+}
+images {
+  image: "/gui/icons/icon_state_storage.png"
+}
+images {
+  image: "/gui/icons/icon_state_exhibition.png"
+}
+images {
+  image: "/gui/icons/icon_state_restoration.png"
+}
+images {
+  image: "/gui/icons/icon_arrow_right.png"
+}
+images {
+  image: "/gui/icons/icon_state_hand.png"
+}
+images {
+  image: "/gui/icons/icon_empty.png"
+}
+images {
+  image: "/gui/icons/icon_arrow_left.png"
+}
+images {
+  image: "/features/button_bubble/button_bubble.png"
+}
+images {
+  image: "/gui/icons/close.png"
+}
+images {
+  image: "/gui/icons/close_off.png"
+}
+images {
+  image: "/gui/icons/icon_arrow_left_off.png"
+}
+images {
+  image: "/gui/icons/icon_arrow_right_off.png"
+}
+images {
+  image: "/assets/textures/props/book_open_01.png"
+}
+images {
+  image: "/assets/textures/props/book_pages_flip_01.png"
+}
+images {
+  image: "/assets/textures/props/book_pages_flip_02.png"
+}
+images {
+  image: "/assets/textures/props/book_pages_flip_03.png"
+}
+images {
+  image: "/assets/textures/props/book_pages_flip_04.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_01.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_02.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_03.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_04.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_05.png"
+}
+images {
+  image: "/assets/textures/props/book_appearance_06.png"
+}
+images {
+  image: "/gui/icons/button_sound_off.png"
+}
+images {
+  image: "/gui/icons/button_sound_on.png"
+}
+images {
+  image: "/gui/icons/button_resume.png"
+}
+images {
+  image: "/gui/icons/button_pause_green.png"
+}
+images {
+  image: "/gui/icons/icon_sound_black.png"
+}
+images {
+  image: "/gui/icons/icon_sound_white.png"
+}
+images {
+  image: "/gui/icons/icon_stamina.png"
+}
+images {
+  image: "/gui/icons/button_export.png"
+}
+images {
+  image: "/gui/icons/button_import.png"
+}
+images {
+  image: "/gui/speech_bubble_b_dark_3px.png"
+}
+images {
+  image: "/gui/speech_bubble_c_dark_3px.png"
+}
+images {
+  image: "/gui/icons/icon_quiz_main.png"
+}
+images {
+  image: "/gui/icons/icon_quiz_main_01.png"
+}
+images {
+  image: "/gui/icons/icon_quiz_main_02.png"
+}
+images {
+  image: "/gui/icons/icon_quiz_main_03.png"
+}
+images {
+  image: "/gui/icons/button_web_bug.png"
+}
+images {
+  image: "/gui/icons/button_web_option.png"
+}
+images {
+  image: "/gui/icons/button_web_joystick_center.png"
+}
+images {
+  image: "/gui/icons/button_web_joystick_down.png"
+}
+images {
+  image: "/gui/icons/button_web_joystick_left.png"
+}
+images {
+  image: "/gui/icons/button_web_joystick_right.png"
+}
+images {
+  image: "/gui/icons/button_web_joystick_up.png"
+}
+images {
+  image: "/gui/icons/button_web_pause.png"
+}
+images {
+  image: "/gui/icons/icon_cat_pet.png"
+}
+images {
+  image: "/assets/textures/props/cat_food_can_01.png"
+}
+images {
+  image: "/assets/textures/props/cat_food_can_02.png"
+}
+images {
+  image: "/assets/textures/props/cat_food_can_03.png"
+}
+images {
+  image: "/assets/textures/props/cat_food_can_04.png"
+}
+images {
+  image: "/assets/textures/props/icon_poison_nest_01.png"
+}
+images {
+  image: "/assets/textures/props/icon_poison_nest_02.png"
+}
+images {
+  image: "/assets/textures/props/icon_poison_nest_03.png"
+}
+images {
+  image: "/assets/textures/props/icon_poison_nest_04.png"
+}
+images {
+  image: "/gui/icons/logo_nosinmipixel.png"
+}
+animations {
+  id: "btn_close_hover_on"
+  images {
+    image: "/gui/icons/close_off.png"
+  }
+  images {
+    image: "/gui/icons/close.png"
+  }
+  fps: 5
+}
+animations {
+  id: "btn_forward_hover_on"
+  images {
+    image: "/gui/icons/icon_arrow_right_off.png"
+  }
+  images {
+    image: "/gui/icons/icon_arrow_right.png"
+  }
+  fps: 5
+}
+animations {
+  id: "btn_backward_hover_on"
+  images {
+    image: "/gui/icons/icon_arrow_left_off.png"
+  }
+  images {
+    image: "/gui/icons/icon_arrow_left.png"
+  }
+  fps: 5
+}
+animations {
+  id: "btn_close_hover_off"
+  images {
+    image: "/gui/icons/close_off.png"
+  }
+  images {
+    image: "/gui/icons/close.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "btn_forward_hover_off"
+  images {
+    image: "/gui/icons/icon_arrow_right_off.png"
+  }
+  images {
+    image: "/gui/icons/icon_arrow_right.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "btn_backward_hover_off"
+  images {
+    image: "/gui/icons/icon_arrow_left_off.png"
+  }
+  images {
+    image: "/gui/icons/icon_arrow_left.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "btn_close_idle"
+  images {
+    image: "/gui/icons/close_off.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "btn_forward_idle"
+  images {
+    image: "/gui/icons/icon_arrow_right_off.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "btn_backward_idle"
+  images {
+    image: "/gui/icons/icon_arrow_left_off.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "book_idle"
+  images {
+    image: "/assets/textures/props/book_open_01.png"
+  }
+  playback: PLAYBACK_NONE
+  fps: 5
+}
+animations {
+  id: "book_page_forward"
+  images {
+    image: "/assets/textures/props/book_pages_flip_01.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_02.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_03.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_04.png"
+  }
+  fps: 5
+}
+animations {
+  id: "book_page_backward"
+  images {
+    image: "/assets/textures/props/book_pages_flip_01.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_02.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_03.png"
+  }
+  images {
+    image: "/assets/textures/props/book_pages_flip_04.png"
+  }
+  playback: PLAYBACK_ONCE_BACKWARD
+  fps: 5
+}
+animations {
+  id: "icon_quiz_main_anim"
+  images {
+    image: "/gui/icons/icon_quiz_main_01.png"
+  }
+  images {
+    image: "/gui/icons/icon_quiz_main_02.png"
+  }
+  images {
+    image: "/gui/icons/icon_quiz_main_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "book_appaerance"
+  images {
+    image: "/assets/textures/props/book_appearance_01.png"
+  }
+  images {
+    image: "/assets/textures/props/book_appearance_02.png"
+  }
+  images {
+    image: "/assets/textures/props/book_appearance_03.png"
+  }
+  images {
+    image: "/assets/textures/props/book_appearance_04.png"
+  }
+  images {
+    image: "/assets/textures/props/book_appearance_05.png"
+  }
+  images {
+    image: "/assets/textures/props/book_appearance_06.png"
+  }
+  fps: 5
+}
+animations {
+  id: "cat_food_icon_anim"
+  images {
+    image: "/assets/textures/props/cat_food_can_01.png"
+  }
+  images {
+    image: "/assets/textures/props/cat_food_can_02.png"
+  }
+  images {
+    image: "/assets/textures/props/cat_food_can_03.png"
+  }
+  images {
+    image: "/assets/textures/props/cat_food_can_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "icon_poison_anim"
+  images {
+    image: "/assets/textures/props/icon_poison_nest_01.png"
+  }
+  images {
+    image: "/assets/textures/props/icon_poison_nest_02.png"
+  }
+  images {
+    image: "/assets/textures/props/icon_poison_nest_03.png"
+  }
+  images {
+    image: "/assets/textures/props/icon_poison_nest_04.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+extrude_borders: 2

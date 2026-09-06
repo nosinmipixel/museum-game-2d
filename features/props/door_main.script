@@ -1,0 +1,130 @@
+-- features/props/door_main.script
+-- ═══════════════════════════════════════════════════════
+-- 🚪 PUERTA AUTOMÁTICA PRINCIPAL
+-- ═══════════════════════════════════════════════════════
+--
+--   Script para puerta que se abre automáticamente
+--   cuando el jugador se acerca a cierta distancia.
+--
+--   Animaciones (door.atlas), dos sprites a distinto Z:
+--     sprite_front (z=0.2) → mitad superior (delante del jugador)
+--         door_main_front_idle/open/close
+--     sprite_back  (z=0.0) → mitad inferior (detrás del jugador)
+--         door_main_back_idle/open/close
+--
+--   Sonidos (componentes en .go):
+--     #door_open   → sonido de apertura (door_sliding_open.sound)
+--     #door_closed → sonido de cierre (door_sliding_close.sound)
+--
+--   Propiedades configurables:
+--     open_distance  → distancia para abrir (defecto: 150)
+--     close_distance → distancia para cerrar (defecto: 200)
+--                     (close > open para evitar flickering)
+--
+--   Patrón de animación: se usa callback en play_flipbook
+--   para detectar fin de animación (patrón del proyecto).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("open_distance", 100)
+go.property("close_distance", 100)
+
+local config = require "main.config"
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_DOOR_MAIN = false
+local dprint = config.make_log(DEBUG_DOOR_MAIN)
+
+-- Animaciones pre-hasheadas (DEFOLD_LUA_STANDARDS §2)
+local ANIM_FRONT_IDLE  = hash("door_main_front_idle")
+local ANIM_FRONT_OPEN  = hash("door_main_front_open")
+local ANIM_FRONT_CLOSE = hash("door_main_front_close")
+local ANIM_BACK_IDLE   = hash("door_main_back_idle")
+local ANIM_BACK_OPEN   = hash("door_main_back_open")
+local ANIM_BACK_CLOSE  = hash("door_main_back_close")
+
+-- ═══════════════════════════════════════════════════════
+-- 🚪 ABRIR / CERRAR
+-- ═══════════════════════════════════════════════════════
+
+local function open_door(self)
+	if self.is_open then return end
+	
+	self.is_open = true
+	self.is_animating = true
+
+	-- Sonido: abrir
+	sound.play("#door_open")
+
+	-- Animación: abrir con callback al terminar (ambos sprites en paralelo)
+	sprite.play_flipbook(self.sprite_front_url, ANIM_FRONT_OPEN, function()
+		self.is_animating = false
+	end)
+	sprite.play_flipbook(self.sprite_back_url, ANIM_BACK_OPEN)
+
+	dprint("[Puerta Principal] Abierta")
+end
+
+local function close_door(self)
+	if not self.is_open then return end
+	
+	self.is_open = false
+	self.is_animating = true
+
+	-- Sonido: cerrar
+	sound.play("#door_closed")
+
+	-- Animación: cerrar con callback → volver a idle al terminar (ambos sprites)
+	sprite.play_flipbook(self.sprite_front_url, ANIM_FRONT_CLOSE, function()
+		sprite.play_flipbook(self.sprite_front_url, ANIM_FRONT_IDLE)
+		self.is_animating = false
+	end)
+	sprite.play_flipbook(self.sprite_back_url, ANIM_BACK_CLOSE, function()
+		sprite.play_flipbook(self.sprite_back_url, ANIM_BACK_IDLE)
+	end)
+
+	dprint("[Puerta Principal] Cerrada")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 CALLBACKS DEL SCRIPT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.is_open = false
+	self.is_animating = false
+
+	-- URLs de componentes (sprites divididos a distinto Z)
+	self.sprite_front_url = msg.url(nil, go.get_id(), hash("sprite_front"))
+	self.sprite_back_url = msg.url(nil, go.get_id(), hash("sprite_back"))
+	self.player_url = msg.url("/player")
+
+	-- Cuadrados de distancias: comparación en update() sin alocar (§1)
+	self.open_distance_sqr = self.open_distance * self.open_distance
+	self.close_distance_sqr = self.close_distance * self.close_distance
+end
+
+function update(self, dt)
+	-- Si está animando, esperar a que termine
+	if self.is_animating then return end
+
+	-- Detectar distancia al jugador
+	if go.exists(self.player_url) then
+		local player_pos = go.get_position(self.player_url)
+		local door_pos = go.get_position()
+		-- Distancia al cuadrado por componentes (sin alocar — §1), equivalente
+		-- a `length <=/> distance` (ambos lados no negativos).
+		local dx = player_pos.x - door_pos.x
+		local dy = player_pos.y - door_pos.y
+		local dist_sqr = dx * dx + dy * dy
+
+		-- Lógica con histéresis para evitar flickering
+		if not self.is_open and dist_sqr <= self.open_distance_sqr then
+			open_door(self)
+		elseif self.is_open and dist_sqr >= self.close_distance_sqr then
+			close_door(self)
+		end
+	end
+end

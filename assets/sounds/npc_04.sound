@@ -1,0 +1,3 @@
+sound: "/assets/sounds/npc_04.ogg"
+group: "sfx"
+looping: 1

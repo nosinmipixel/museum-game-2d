@@ -1,0 +1,56 @@
+animations {
+  id: "walk"
+  images {
+    image: "/features/enemy_cockroach/walk_01.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/walk_02.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "idle"
+  images {
+    image: "/features/enemy_cockroach/idle_0001.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/idle_0002.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "attack"
+  images {
+    image: "/features/enemy_cockroach/attack_01.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/attack_02.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "death"
+  images {
+    image: "/features/enemy_cockroach/death_01.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/death_02.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/death_03.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/death_04.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/death_05.png"
+  }
+  images {
+    image: "/features/enemy_cockroach/death_06.png"
+  }
+  fps: 8
+}
+extrude_borders: 2

@@ -1,0 +1,915 @@
+-- features/player/player.script
+-- ═══════════════════════════════════════════════════════
+-- 🕹️ JUGADOR — CONTROLADOR PRINCIPAL
+-- ═══════════════════════════════════════════════════════
+--
+--   Movimiento, animación, diálogos, daño, muerte y respawn
+--   del conservador. Consume aiming, auto_aim y el estado
+--   de NPCs/enemigos.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "reset_cat"          (hacia el gato)
+--   Mensajes que RECIBE (on_message):
+--     ← "input_event"           (desde scene_manager)
+--     ← "attack_direction"      (desde player_spray)
+--     ← "start_talking"/"lock_dialog"/"pause_movement"
+--     ← "respawn_player"/"resume_movement"/"cancel_current_dialog"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local text_loader = require "main.text_loader"
+local config = require "main.config"
+local aiming = require "features.player.aiming"
+local npc_spawn_state = require "main.npc_spawn_state"
+local enemy_state = require "main.enemy_state"
+local game_state = require "main.game_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_PLAYER = false
+local dprint = config.make_log(DEBUG_PLAYER)
+
+-- 🧥 CLOAKING — DESBLOQUEO POR NORMAL DEL MURO (Opción B, probar Ago 2026):
+--    El bloqueo (is_blocked_by_wall) se mantiene MIENTRAS la dirección de
+--    movimiento actual empuje contra la ÚLTIMA normal de muro recibida
+--    (dot(direction, blocked_normal) < -0.3, misma comprobación que lo
+--    activa). En cuanto la dirección deja de oponerse a esa normal
+--    (dot >= -0.3, p. ej. te deslizas en paralelo o cambias de dirección),
+--    se desbloquea SIN soltar la tecla ni esperar un timer.
+--    Opción A (timer de grace period) se probó primero y se descartó (Ago
+--    2026): el motor no re-emite contact_point_response estando el jugador
+--    quieto contra el muro → el timer expiraba y reintroducía jitter.
+--    La normal evita el timer: es el dato FÍSICO del último contacto real.
+local BLOCK_DOT_THRESHOLD = -0.3  -- mismo umbral que activa el bloqueo
+
+-- ============================================
+-- FUNCIONES DECLARADAS PRIMERO
+-- ============================================
+
+local function update_animation(self)
+	if self.is_talking then
+		if self.current_animation ~= self.talk_animation then
+			sprite.play_flipbook("#sprite", self.talk_animation)
+			self.current_animation = self.talk_animation
+		end
+		return
+	end
+
+	if DEBUG_PLAYER then
+		local dir_len = vmath.length_sqr(self.direction)
+		local anim_decision = "—"
+		if dir_len > 0 and self.is_blocked_by_wall then
+			anim_decision = "🔒 IDLE (cloaking: bloqueado por muro)"
+		elseif dir_len > 0 then
+			anim_decision = "🚶 WALK (en dirección)"
+		else
+			anim_decision = "🧍 IDLE (sin dirección)"
+		end
+		dprint(string.format("[%04d] ANIM dir=(%.2f,%.2f) blocked=%s → %s",
+			self._frame, self.direction.x, self.direction.y,
+			tostring(self.is_blocked_by_wall), anim_decision))
+	end
+
+	-- 🧥 CLOAKING: si el jugador presiona una dirección y está bloqueado
+	-- por un muro (is_blocked_by_wall = true), forzar idle.
+	-- El flag mantiene histeresis (no se resetea cada frame), así que
+	-- mientras el jugador no suelte la tecla, no se moverá y no generará
+	-- nuevas penetraciones → la corrección se estabiliza a 0.
+	if vmath.length_sqr(self.direction) > 0 and self.is_blocked_by_wall then
+		if self.current_animation ~= hash("idle") then
+			sprite.play_flipbook("#sprite", hash("idle"))
+			self.current_animation = hash("idle")
+		end
+		return
+	end
+
+	local animation = hash("idle")
+
+	if self.direction.x > 0 then
+		animation = hash("right")
+	elseif self.direction.x < 0 then
+		animation = hash("left")
+	elseif self.direction.y > 0 then
+		animation = hash("up")
+	elseif self.direction.y < 0 then
+		animation = hash("down")
+	end
+
+	if animation ~= self.current_animation then
+		sprite.play_flipbook("#sprite", animation)
+		self.current_animation = animation
+		self.normal_animation = animation
+	end
+end
+
+local function update_movement(self, dt, update_anim)
+	if vmath.length_sqr(self.direction) > 1 then
+		-- Normalizar mutando en el sitio (sin alocar). Ocurre al mover en
+		-- diagonal con teclado (módulo √2 > 1) — hot path real (§1).
+		local dir = self.direction
+		local len = math.sqrt(dir.x * dir.x + dir.y * dir.y)
+		dir.x = dir.x / len
+		dir.y = dir.y / len
+	end
+
+	local current_position = go.get_position()
+	-- Zero-garbage (§1): mutar vector pre-asignado en vez de alocar
+	-- `current_position + dir*speed*dt` por frame.
+	local new_position = self.tmp_move
+	new_position.x = current_position.x + self.direction.x * self.movement_speed * dt
+	new_position.y = current_position.y + self.direction.y * self.movement_speed * dt
+	new_position.z = current_position.z
+	go.set_position(new_position)
+
+	if DEBUG_PLAYER and vmath.length_sqr(self.direction) > 0 then
+		local displacement = new_position - current_position
+		dprint(string.format("[%04d] MOVE de (%.1f,%.1f) → (%.1f,%.1f) [desplazamiento (%.2f,%.2f)]",
+			self._frame, current_position.x, current_position.y,
+			new_position.x, new_position.y,
+			displacement.x, displacement.y))
+	end
+
+	if update_anim then
+		update_animation(self)
+	end
+end
+
+local function handle_collision(self, message)
+	if message.distance > 0 then
+		-- 📐 Corrección por MÁXIMO por eje y dirección.
+		-- Para cada eje (x, y), registramos el empuje más fuerte en cada
+		-- dirección (+ / -). Al final del frame sumamos push_pos + push_neg:
+		--   • Fuerzas opuestas se cancelan (paredes paralelas): pos + neg ≈ 0
+		--   • Fuerzas en misma dirección: solo cuenta la MÁS profunda
+		-- Esto elimina la oscilación frame a-frame causada por la proyección
+		-- (vmath.project) que era dependiente del orden de los mensajes.
+		local comp = message.distance * message.normal
+		if comp.x > 0 then
+			self.push_pos.x = math.max(self.push_pos.x, comp.x)
+		elseif comp.x < 0 then
+			self.push_neg.x = math.min(self.push_neg.x, comp.x)
+		end
+		if comp.y > 0 then
+			self.push_pos.y = math.max(self.push_pos.y, comp.y)
+		elseif comp.y < 0 then
+			self.push_neg.y = math.min(self.push_neg.y, comp.y)
+		end
+	end
+end
+
+local function set_talking_animation(self, is_talking)
+	if is_talking == self.is_talking then return end
+
+	self.is_talking = is_talking
+
+	if is_talking then
+		if self.current_animation and self.current_animation ~= hash("idle") then
+			self.normal_animation = self.current_animation
+		end
+		sprite.play_flipbook("#sprite", self.talk_animation)
+		self.current_animation = self.talk_animation
+	else
+		if self.normal_animation then
+			sprite.play_flipbook("#sprite", self.normal_animation)
+			self.current_animation = self.normal_animation
+		end
+	end
+end
+
+local function get_attack_animation(self, dir, is_moving)
+	-- Ángulo de la dirección REAL (sin espejo): la capa unificada (aiming.lua)
+	-- resuelve el doble espejo X, así que aquí la dirección es la verdadera y
+	-- el personaje mira SIEMPRE hacia donde dispara (como fue diseñado).
+	local angle = math.atan2(dir.y, dir.x)  -- -π to π
+
+	if is_moving then
+		-- 6 walking animations cubriendo 360°, 60° por sector
+		if angle >= -math.pi / 6 and angle < math.pi / 6 then
+			return hash("attack_walk_right")   -- dispara derecha → mira derecha
+		elseif angle >= math.pi / 6 and angle < math.pi / 2 then
+			return hash("attack_walk_up_right") -- dispara arriba-derecha → mira arriba-derecha
+		elseif angle >= math.pi / 2 and angle < 5 * math.pi / 6 then
+			return hash("attack_walk_up_left") -- dispara arriba-izquierda → mira arriba-izquierda
+		elseif angle >= 5 * math.pi / 6 or angle < -5 * math.pi / 6 then
+			return hash("attack_walk_left")  -- dispara izquierda → mira izquierda
+		elseif angle >= -5 * math.pi / 6 and angle < -math.pi / 2 then
+			return hash("attack_walk_down_left") -- dispara abajo-izquierda → mira abajo-izquierda
+		else  -- angle >= -π/2 and angle < -π/6
+			return hash("attack_walk_down_right")  -- dispara abajo-derecha → mira abajo-derecha
+		end
+	else
+		-- 2 idle animations: el personaje mira hacia donde dispara
+		if dir.x >= 0 then
+			return hash("attack_idle_right")  -- dispara derecha → mira derecha
+		else
+			return hash("attack_idle_left") -- dispara izquierda → mira izquierda
+		end
+	end
+end
+
+local function play_attack_animation(self, dir)
+	self.attack_dir = dir
+	self.is_attacking = true
+
+	-- Animación inicial según estado de movimiento actual
+	local is_moving = vmath.length_sqr(self.direction) > 0
+	self.was_moving_during_attack = is_moving
+	local animation = get_attack_animation(self, dir, is_moving)
+
+	if animation then
+		sprite.play_flipbook("#sprite", animation)
+		self.current_animation = animation
+	end
+end
+
+local function play_damage_animation(self)
+	sprite.play_flipbook("#sprite", hash("damage"))
+	self.current_animation = hash("damage")
+	self.damage_timer = self.damage_animation_duration
+	sound.play("#damage")
+end
+
+-- 🔊 Gestiona el sonido de pasos: lo inicia al moverse, lo detiene al parar
+local function update_walk_sound(self, is_moving)
+	if is_moving and not self.is_walking then
+		self.is_walking = true
+		sound.play("#player_walk")
+	elseif not is_moving and self.is_walking then
+		self.is_walking = false
+		sound.stop("#player_walk")
+	end
+end
+
+-- Reinicia el estado de movimiento (direction + correction) tras cada frame
+-- Se usa en DAMAGE, ATTACK y movimiento NORMAL
+local function reset_movement_state(self)
+	-- Guardar dirección antes de limpiarla para detectar bloqueo por muros
+	-- en on_message (contact_point_response) en el mismo frame.
+	if DEBUG_PLAYER and vmath.length_sqr(self.direction) > 0 then
+		dprint(string.format("[%04d] RESET direction=(%.2f,%.2f) → last_direction guardada",
+			self._frame, self.direction.x, self.direction.y))
+	end
+	-- 🎯 FACING: alimentar la capa unificada de puntería (aiming.lua) con la
+	--    última dirección de movimiento. Solo si hay dirección (si está quieto
+	--    se conserva la última conocida → key_space sin ratón dispara hacia
+	--    donde se movía).
+	--    Zero-garbage (§1): last_direction es pre-asignado y se muta en el
+	--    sitio SOLO cuando hay dirección. Como set_facing guarda la referencia
+	--    y solo se re-registra al haber dirección nueva, la referencia nunca
+	--    apunta a un vector que luego se ponga a cero. Al parar no se toca,
+	--    así que el fallback conserva la última dirección no nula.
+	if vmath.length_sqr(self.direction) > 0 then
+		self.last_direction.x = self.direction.x
+		self.last_direction.y = self.direction.y
+		self.last_direction.z = 0
+		aiming.set_facing(self.last_direction)
+	end
+
+	-- Reset por componentes (sin alocar)
+	self.direction.x, self.direction.y, self.direction.z = 0, 0, 0
+	self.correction.x, self.correction.y, self.correction.z = 0, 0, 0
+end
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	-- Si está muerto, ignorar todo input de movimiento
+	if self.is_dead then
+		return
+	end
+
+	if not self.dialog_active then
+		if action_id == hash("up") then
+			self.direction.y = action.value or 0
+		elseif action_id == hash("down") then
+			self.direction.y = -(action.value or 0)
+		elseif action_id == hash("left") then
+			self.direction.x = -(action.value or 0)
+		elseif action_id == hash("right") then
+			self.direction.x = action.value or 0
+		end
+	end
+
+	if action_id == hash("key_esc") and action.pressed then
+		if self.dialog_active and self.can_cancel_dialog then
+			msg.post(self.dialogue_manager_url, "cancel_dialog")
+		end
+	end
+end
+
+-- ============================================
+-- FUNCIÓN DE MUERTE Y RESPAWN
+-- ============================================
+
+local function trigger_death(self)
+	if self.is_dead then return end
+	self.is_dead = true
+
+	-- Detener sonido de caminar
+	if self.is_walking then
+		sound.stop("#player_walk")
+		self.is_walking = false
+	end
+
+	-- Detener sonido de spray y animación de ataque
+	sound.stop("#spray")
+	self.is_attacking = false
+	self.attack_dir = nil
+	self.was_moving_during_attack = false
+	-- 🧍 Sincronizar el estado de muerte con player_spray: sin este mensaje,
+	--    el jugador muerto podía seguir disparando (rearmaba firing con
+	--    click_right/space) y la animación de ataque sobrescribía la de
+	--    muerte. player_died bloquea inputs hasta player_respawned.
+	msg.post("#player_spray", "player_died")
+	-- 📱 Sensor de interacción (mobile_interact): muerto no se interactúa
+	msg.post("#player_interact", "player_died")
+	-- 🪳 Pausar emisión de enemigos: mientras el jugador esté muerto, los
+	--    spawners no deben emitir (evita que una emisión pendiente coincida
+	--    con el clic de Reintentar y deje un enemigo sin limpiar). Se reanuda
+	--    en el respawn efectivo (cuando is_dead vuelve a false).
+	enemy_state.set_waves_paused(true)
+
+	-- 🎵 Evento de audio: muerte del jugador (fondo de muerte en bucle
+	--    hasta el respawn; la pila de audio del audio_manager lo detiene).
+	msg.post(self.audio_url, "play_event", { id = "death" })
+
+	-- 💬 Cancelar diálogo/quiz en curso: al morir se resetea el mundo y el
+	--    sonido de quiz no debe quedar activo en la pila de audio. Se usa
+	--    "dialog_cancelled" (cancelación INCONDICIONAL) en lugar de
+	--    "cancel_dialog" (que el gestor ignora durante el quiz): si el
+	--    jugador muere respondiendo un quiz, el dialogue_manager quedaría
+	--    colgado (active=true) y el flag global de diálogo (que pausa los
+	--    recordatorios del HUD) nunca se liberaría.
+	msg.post(self.dialogue_manager_url, "dialog_cancelled")
+
+	-- Reproducir animación de muerte
+	-- NOTA: play_flipbook con callback no funciona en esta versión de Defold.
+	-- Usamos un timer para cubrir un ciclo completo (11 frames @8fps = 1.375s)
+	-- y luego congelamos en idle. El jugador no se mueve porque is_dead = true.
+	sprite.play_flipbook("#sprite", hash("death"))
+	self.current_animation = hash("death")
+
+	-- Timer que congela en el último frame tras un ciclo completo
+	timer.delay(1.4, false, function()
+		if self.is_dead and self.current_animation == hash("death") then
+			-- Congelar en el último fotograma (animación 'dead' = 1 frame)
+			sprite.play_flipbook("#sprite", hash("dead"))
+			self.current_animation = hash("dead")
+		end
+	end)
+
+	-- Reproducir sonido de muerte
+	sound.play("#death")
+
+	-- Desactivar colisiones para evitar que otros coches sigan atropellando el cadáver
+	msg.post("#collisionobject_walls", "disable")
+	msg.post("#collisionobject_spawn", "disable")
+	msg.post("#collisionobject_enemy", "disable")
+
+	-- Solicitar foco de entrada para que el HUD pueda recibir clics
+	msg.post(".", "acquire_input_focus")
+
+	-- Notificar al HUD para que muestre el botón de reintentar. La causa de
+	--    la muerte se pasa en el mensaje para discriminar el texto de derrota
+	--    (💀 Ago 2026: el coche la envía vía taken_damage{ source = "car" };
+	--    nil → plagas → fight_defeat). Se consume y se resetea aquí.
+	msg.post(self.hud_url, "show_retry_button", { cause = self.death_cause or "pest" })
+	self.death_cause = nil
+
+	-- 🐱 Reset del gato: si estaba en modo mascota, que abandone el PET y
+	--    vuelva a su spawn inicial y a patrulla (GOTCHA #4: URL real del
+	--    gato registrada en npc_spawn_state, nunca adivinar la ruta).
+	local cat_url = npc_spawn_state.get_npc_url("cat")
+	if cat_url and go.exists(cat_url) then
+		msg.post(cat_url, "reset_cat")
+	end
+
+	dprint("[JUGADOR] ¡Ha muerto! Botón de reintentar mostrado.")
+end
+
+local function trigger_respawn(self)
+	-- Reproducir sonido de reintento
+	sound.play("#retry")
+
+	-- 🪳 Limpiar enemigos vivos al reiniciar: el jugador muerto seguía siendo
+	--    objetivo de los enemigos (persiguen y atacan el cadáver — efecto
+	--    buscado durante la animación de muerte). Al pulsar Reintentar
+	--    desaparecen para que el respawn no ocurra en mitad de un asedio
+	--    (enemy_state.clear_alive, GOTCHA #4: borra solo los vivos y limpia
+	--    el registro de ids reales devueltos por factory.create).
+	enemy_state.clear_alive()
+
+	-- Teletransportar a la posición del spawn point definido en el editor.
+	-- Esto evita depender de la posición capturada en init() que puede ser
+	-- frágil si algo mueve al jugador antes de init() o si se añaden parents.
+	local spawn_url = msg.url("/player_spawn_point")
+	if go.exists(spawn_url) then
+		-- get_position() (local) y set_position() (local) son consistentes entre sí.
+		-- Resistente a futuros parents tanto en player como en spawn_point.
+		local spawn_pos = go.get_position(spawn_url)
+		go.set_position(spawn_pos)
+	else
+		-- Fallback: usar la posición inicial cacheada en init()
+		go.set_position(self.initial_position)
+		dprint("[Respawn] ⚠️ player_spawn_point no encontrado, usando initial_position: " .. tostring(self.initial_position))
+	end
+
+	-- Notificar al HUD para que oculte el botón de reintentar
+	msg.post(self.hud_url, "hide_retry_button")
+
+	-- Esperar 1s para que la cámara se estabilice (suavizado lerp)
+	-- Durante este tiempo se sigue mostrando el frame congelado 'dead'
+	timer.delay(1.0, false, function()
+		if not self.is_dead then return end
+
+		-- Ahora la cámara ya está estabilizada: reproducir animación de respawn
+		sprite.play_flipbook("#sprite", hash("respawn"))
+		self.current_animation = hash("respawn")
+
+		-- Timer de respawn: 3 frames a 8fps = 0.375s, usamos 0.5s de margen
+		-- Al terminar: restaurar estado normal
+		timer.delay(0.5, false, function()
+			if not self.is_dead then return end
+
+			self.is_dead = false
+			-- 🎵 Fin del evento de muerte: el jugador vuelve a estar vivo y la
+			--    playlist de fondo se reanuda (en la pista siguiente, por diseño).
+			msg.post(self.audio_url, "stop_event", { id = "death" })
+			-- 🪳 Reanudar emisión de enemigos: el jugador vuelve a estar vivo.
+			--    Se reanuda AQUÍ (no al pulsar Reintentar) para no emitir
+			--    enemigos durante la animación de respawn (1s cámara + 0.5s).
+			enemy_state.set_waves_paused(false)
+			-- 🧍 El jugador vuelve a estar vivo: desbloquear el disparo en
+			--    player_spray (emparejado con player_died de trigger_death).
+			msg.post("#player_spray", "player_respawned")
+			-- 📱 Sensor de interacción: desbloquear (emparejado con player_died)
+			msg.post("#player_interact", "player_respawned")
+			-- 🧹 Reset de estados residuales: si el jugador murió en mitad de
+			--    una animación de daño (damage_timer activo), hablando con un
+			--    NPC o con diálogo abierto, nada de eso debe arrastrarse al
+			--    respawn (podía quedar un frame de animación de daño o el
+			--    movimiento bloqueado por dialog_active).
+			self.damage_timer = 0
+			self.is_talking = false
+			self.dialog_active = false
+			self.can_cancel_dialog = true
+			self.direction = vmath.vector3()
+			self.correction = vmath.vector3()
+			self.health_check_timer = 0
+
+			-- Reactivar colisiones
+			msg.post("#collisionobject_walls", "enable")
+			msg.post("#collisionobject_spawn", "enable")
+			msg.post("#collisionobject_enemy", "enable")
+
+			-- Restaurar salud al máximo
+			local game_state = require "main.game_state"
+			game_state.set_global("health", 100)
+			-- 🗣️ Red de seguridad: si el jugador murió durante un diálogo/quiz,
+			--    el flag global de diálogo (game_state.dialog_active) debe
+			--    quedar limpio al reaparecer → los recordatorios del HUD se
+			--    reanudan (el dialogue_manager ya lo canceló en trigger_death
+			--    con dialog_cancelled; este reset es defensa en profundidad).
+			game_state.set_dialog_active(false)
+
+			-- Resetear estado de agotamiento (el jugador revive fresco)
+			self.exhausted = false
+			self.movement_speed = self.base_movement_speed
+
+			-- Volver a animación idle
+			sprite.play_flipbook("#sprite", hash("idle"))
+			self.current_animation = hash("idle")
+
+			dprint("[JUGADOR] ¡Ha resucitado!")
+		end)
+	end)
+end
+
+-- ============================================
+-- MÉTODOS DEL SCRIPT
+-- ============================================
+
+-- 🌐 Recarga el hint localizado de agotamiento (text_alert). Definida ANTES
+--    de init para que init y el callback de idioma la capturen como upvalue
+--    (GOTCHA #1).
+local function load_exhausted_hint(self)
+	local general_texts = text_loader.load("general") or {}
+	self.exhausted_hint = (general_texts.tutorials and general_texts.tutorials.hint_exhausted)
+		or "¡Estás agotado! Recupera energía en la máquina expendedora."
+end
+
+function init(self)
+	self.direction = vmath.vector3()
+	self.current_animation = hash("idle")
+	self.normal_animation = hash("idle")
+	self.talk_animation = hash("talk")
+	self.is_talking = false
+
+	self.is_attacking = false
+	self.attack_dir = nil
+	self.was_moving_during_attack = false
+
+	self.damage_timer = 0
+	self.damage_animation_duration = 0.3
+
+	msg.post(".", "acquire_input_focus")
+	self.correction = vmath.vector3()
+
+	-- 🧱 Sistema de corrección por máximo por eje/dirección.
+	-- push_pos = empuje máximo en dirección positiva (+x, +y).
+	-- push_neg = empuje máximo en dirección negativa (-x, -y).
+	-- En update(): correction = push_pos + push_neg.
+	self.push_pos = vmath.vector3()
+	self.push_neg = vmath.vector3()
+
+	-- Zero-garbage (§1): vectores pre-asignados para el hot path de update()
+	self.tmp_move = vmath.vector3()      -- destino de update_movement
+	self.tmp_wall_pos = vmath.vector3()  -- destino de la corrección de pared
+
+	-- 🧥 CLOAKING (histeresis): is_blocked_by_wall se actualiza en
+	-- on_message() cuando contact_point_response indica que el muro
+	-- empuja EN CONTRA de la dirección de movimiento (dot < -0.3).
+	-- El flag mantiene histeresis (no se resetea cada frame) y evita
+	-- que el jugador se mueva mientras esté bloqueado, eliminando
+	-- la oscilación de la corrección física.
+	-- DEBUG_PLAYER (cabecera del script) controla los prints de depuración.
+	self._frame = 0
+	self.is_blocked_by_wall = false
+	self.last_direction = vmath.vector3()
+	self.blocked_normal = vmath.vector3()  -- Opción B: normal del ÚLTIMO contacto de muro que bloquea
+
+	self.dialog_active = false
+	self.can_cancel_dialog = true
+	self.movement_speed = 150
+	self.base_movement_speed = 150   -- velocidad original (para restaurar tras agotamiento)
+
+	-- 🔗 URLs cacheadas (regla #4: resolver en init(), no hardcodear en handlers)
+	self.hud_url = msg.url("/gui#hud")
+	self.dialogue_manager_url = msg.url("/game_manager#dialogue_manager")
+	self.audio_url = msg.url("bootstrap:/audio_manager#manager")
+
+	-- Estado de muerte / respawn
+	self.is_dead = false
+	self.initial_position = go.get_position()
+	-- 💀 Causa de la última muerte ("car" | nil = plagas): la registra el
+	--    handler de taken_damage y trigger_death la pasa al HUD para
+	--    discriminar el mensaje de derrota (Ago 2026).
+
+	-- 🪳 Nivel recién cargado y jugador vivo: garantizar oleadas activas.
+	--    Resetea el flag compartido por si una muerte anterior quedó sin
+	--    reanudar (p. ej. una recarga de nivel que no pasó por Reintentar);
+	--    los spawners se auto-sincronizan en su update().
+	enemy_state.set_waves_paused(false)
+
+	-- 🔊 Estado para controlar si el sonido de caminar está sonando
+	self.is_walking = false
+
+	-- Contador para polling de salud (más fiable que callbacks)
+	self.health_check_timer = 0
+	self.health_check_interval = 0.1
+
+	-- ⚡ Polling de stamina (agotamiento)
+	self.stamina_check_timer = 0
+	self.stamina_check_interval = 0.5   -- verificar cada 0.5s
+	self.exhausted = false               -- flag para evitar alertas repetidas
+
+	-- ⚡ Texto de alerta de agotamiento (i18n)
+	load_exhausted_hint(self)
+
+	-- 🌐 Recargar hint si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_exhausted_hint(self)
+		dprint("[Player] Hint de agotamiento recargado por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	dprint("Player inicializado correctamente en: " .. tostring(self.initial_position))
+end
+
+function final(self)
+	-- 🔊 NUEVO: Asegurar que el sonido se detiene si el objeto se destruye
+	if self.is_walking then
+		sound.stop("#player_walk")
+	end
+	msg.post(".", "release_input_focus")
+end
+
+function update(self, dt)
+	self._frame = self._frame + 1
+
+	-- 🧱 Calcular corrección consolidada: push_pos + push_neg.
+	-- Las fuerzas opuestas en el mismo eje se cancelan (ej: pared izq + der).
+	-- Las fuerzas en la misma dirección solo mantienen la MÁS profunda.
+	-- Esto elimina la oscilación frame-a-frame por orden de mensajes.
+	local correction = self.correction
+	correction.x = self.push_pos.x + self.push_neg.x
+	correction.y = self.push_pos.y + self.push_neg.y
+	correction.z = 0
+	-- Reset por componentes (sin alocar)
+	self.push_pos.x, self.push_pos.y, self.push_pos.z = 0, 0, 0
+	self.push_neg.x, self.push_neg.y, self.push_neg.z = 0, 0, 0
+
+	if vmath.length_sqr(correction) > 0 then
+		local pos_before = go.get_position()
+		-- Sumar por componentes en vector pre-asignado (sin alocar)
+		local final_pos = self.tmp_wall_pos
+		final_pos.x = pos_before.x + correction.x
+		final_pos.y = pos_before.y + correction.y
+		final_pos.z = pos_before.z + correction.z
+		go.set_position(final_pos)
+		if DEBUG_PLAYER then
+			dprint(string.format("[%04d] CORRECTION applied: (%.2f,%.2f) — mover de (%.1f,%.1f) a (%.1f,%.1f)",
+				self._frame, self.correction.x, self.correction.y,
+				pos_before.x, pos_before.y,
+				pos_before.x + self.correction.x, pos_before.y + self.correction.y))
+		end
+	end
+
+	-- Polling de salud: detectar muerte (más fiable que callbacks)
+	if not self.is_dead then
+		self.health_check_timer = self.health_check_timer + dt
+		if self.health_check_timer >= self.health_check_interval then
+			self.health_check_timer = 0
+			local health = require("main.game_state").get_global("health") or 100
+			if health <= 0 then
+				trigger_death(self)
+			end
+		end
+	end
+
+	-- 🧥 CLOAKING TOTAL (histeresis): si el jugador está bloqueado por
+	-- un muro y aún presiona una dirección, NO se mueve. El estado de
+	-- bloqueo se mantiene (histeresis) hasta que:
+	--   1) el jugador suelta todas las teclas (direction == 0), O
+	--   2) la dirección ACTUAL deja de empujar contra la última normal de
+	--      muro recibida (dot(direction, blocked_normal) >= -0.3) — Opción B:
+	--      deslizarse en paralelo, cambiar de dirección o que el muro
+	--      desaparezca desbloquea AL INSTANTE sin soltar la tecla.
+	-- Al no moverse, no hay penetración en la pared, no hay
+	-- contact_point_response, no hay corrección → NO HAY JITTER VISUAL.
+	-- is_blocked_by_wall se actualiza en on_message() cuando dot(normal,
+	-- direction) < -0.3 (el muro se opone al movimiento); ahí también se
+	-- refresca blocked_normal con el contacto más reciente.
+	-- Como Defold ejecuta on_message() DESPUÉS de update(), el flag del
+	-- frame anterior ya refleja el contacto actual.
+	if vmath.length_sqr(self.direction) == 0 then
+		self.is_blocked_by_wall = false
+	elseif self.is_blocked_by_wall and vmath.length_sqr(self.blocked_normal) > 0 then
+		-- 🧥 Opción B (desbloqueo por normal): mientras la dirección ACTUAL siga
+		-- empujando contra la última normal de muro recibida (dot < -0.3), el
+		-- bloqueo se mantiene. En cuanto deja de oponerse (dot >= -0.3) — p. ej.
+		-- te deslizas en paralelo, cambias de dirección, o el muro desaparece —
+		-- se desbloquea AL INSTANTE, sin soltar la tecla ni esperar un timer.
+		-- Sin alocaciones: dot() no crea vectores.
+		if vmath.dot(self.direction, self.blocked_normal) >= BLOCK_DOT_THRESHOLD then
+			self.is_blocked_by_wall = false
+		end
+	end
+
+	local can_move = not self.is_blocked_by_wall
+
+	if DEBUG_PLAYER then
+		dprint(string.format("[%04d] === FRAME START === dir=(%.2f,%.2f) blocked=%s can_move=%s anim=%s",
+			self._frame,
+			self.direction.x, self.direction.y,
+			tostring(self.is_blocked_by_wall),
+			tostring(can_move),
+			tostring(self.current_animation)))
+	end
+
+	-- ⚡ Polling de stamina: detectar agotamiento
+	if not self.is_dead then
+		self.stamina_check_timer = self.stamina_check_timer + dt
+		if self.stamina_check_timer >= self.stamina_check_interval then
+			self.stamina_check_timer = 0
+			local stamina = require("main.game_state").get_global("stamina") or 100
+
+			if stamina <= 0 and not self.exhausted then
+				-- Agotado: reducir velocidad al 50%
+				self.exhausted = true
+				self.movement_speed = self.base_movement_speed * 0.5
+				msg.post(self.hud_url, "show_alert", {
+					text = self.exhausted_hint,
+					-- 🔊 Aviso de estado PROACTIVO (llega por polling, no por un clic):
+					--    sonido suave de notificación (smooth_notification, lo
+					--    reproduce el HUD vía el flag alert_sound).
+					alert_sound = true
+				})
+				dprint("[JUGADOR] ⚡ ¡Agotado! Velocidad reducida al 50%")
+
+			elseif stamina > 0 and self.exhausted then
+				-- Recuperado: restaurar velocidad normal
+				self.exhausted = false
+				self.movement_speed = self.base_movement_speed
+				dprint("[JUGADOR] ⚡ Energía recuperada. Velocidad normal restaurada.")
+			end
+		end
+	end
+
+	-- Si está muerto, no hacer nada más
+	if self.is_dead then
+		return
+	end
+
+	if self.damage_timer > 0 then
+		self.damage_timer = self.damage_timer - dt
+		if self.damage_timer <= 0 then
+			update_animation(self)
+		else
+			if can_move and not self.dialog_active then
+				update_movement(self, dt, false)
+			end
+			reset_movement_state(self)
+			return
+		end
+	end	-- Estado de ataque: animación loop mientras se mantiene pulsado
+	if self.is_attacking then
+		if can_move and not self.dialog_active then
+			update_movement(self, dt, false)
+		end
+
+		-- Refrescar animación si cambia el estado de movimiento (idle ↔ walk)
+		local is_moving = vmath.length_sqr(self.direction) > 0
+		if is_moving ~= self.was_moving_during_attack and self.attack_dir then
+			self.was_moving_during_attack = is_moving
+			local anim = get_attack_animation(self, self.attack_dir, is_moving)
+			if anim and anim ~= self.current_animation then
+				sprite.play_flipbook("#sprite", anim)
+				self.current_animation = anim
+			end
+		end
+
+		-- En ataque, el sonido de pasos solo si puede moverse
+		local attack_is_moving = is_moving and can_move
+		update_walk_sound(self, attack_is_moving)
+		reset_movement_state(self)
+		return
+	end
+
+	if can_move and not self.dialog_active then
+		update_movement(self, dt, true)
+	elseif not self.dialog_active then
+		-- Si está bloqueado, refrescar animación que forzará idle
+		update_animation(self)
+	end
+
+	-- El sonido de pasos solo si puede moverse
+	local is_moving = can_move and vmath.length_sqr(self.direction) > 0
+	if DEBUG_PLAYER and (is_moving ~= self.is_walking) then
+		dprint(string.format("[%04d] SOUND walk: %s (dir>0=%s, can_move=%s)",
+			self._frame, tostring(is_moving),
+			tostring(vmath.length_sqr(self.direction) > 0),
+			tostring(can_move)))
+	end
+	update_walk_sound(self, is_moving)
+
+	reset_movement_state(self)
+end
+
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	if message_id == hash("respawn_player") then
+		trigger_respawn(self)
+		return
+
+	elseif message_id == hash("contact_point_response") then
+		-- 🔍 Detección de bloqueo: si la pared empuja EN CONTRA de la
+		-- dirección de movimiento (dot < 0), el jugador presiona contra
+		-- este muro → bloqueado. Si dot >= 0, el muro no se opone
+		-- → el jugador se desliza.
+		-- Threshold -0.3: ignora contactos casi-perpendiculares
+		-- (esquinas, pasillos estrechos) que no deberían bloquear.
+		-- NOTA (zero-garbage): al estar quieto, last_direction conserva la
+		-- última dirección no nula (ya no se pone a cero cada frame). Un
+		-- contacto residual en idle puede activar is_blocked_by_wall de forma
+		-- transitoria, pero update() la limpia al inicio cuando direction==0.
+		if message.group == hash("walls") and vmath.length_sqr(self.last_direction) > 0 then
+				local dot = vmath.dot(message.normal, self.last_direction)
+				if DEBUG_PLAYER then
+					local status = dot < -0.3 and "🔒 BLOQUEA" or "✅ DESLIZA"
+					dprint(string.format("[%04d] ⚡ WALL_CONTACT normal=(%.2f,%.2f) last_dir=(%.2f,%.2f) dot=%.2f → %s",
+						self._frame,
+						message.normal.x, message.normal.y,
+						self.last_direction.x, self.last_direction.y,
+						dot, status))
+				end
+				-- 🧥 Opción B: refrescar la NORMAL del muro en TODO contacto de muro
+				--    (no solo los que bloquean). Al deslizarte en paralelo, los
+				--    contactos llegan cada frame y mantienen la normal al día → el
+				--    desbloqueo del update() evalúa SIEMPRE contra el muro real
+				--    más reciente (sugerencia del revisor, Ago 2026).
+				self.blocked_normal = vmath.vector3(message.normal)
+				if dot < -0.3 then
+					self.is_blocked_by_wall = true
+				end
+				end
+		handle_collision(self, message)
+
+	elseif message_id == hash("lock_dialog") then
+		self.dialog_active = true
+		self.can_cancel_dialog = message.can_cancel or true
+		dprint("Diálogo iniciado - Jugador bloqueado")
+
+	elseif message_id == hash("unlock_dialog") then
+		self.dialog_active = false
+		self.can_cancel_dialog = true
+		set_talking_animation(self, false)
+		dprint("Diálogo terminado - Jugador desbloqueado")
+
+	elseif message_id == hash("cancel_current_dialog") then
+		if self.dialog_active and self.can_cancel_dialog then
+			msg.post(self.dialogue_manager_url, "dialog_cancelled")
+			dprint("Diálogo cancelado por el jugador")
+		end
+
+	elseif message_id == hash("dialog_cancelled_response") then
+		self.dialog_active = false
+		self.can_cancel_dialog = true
+		set_talking_animation(self, false)
+		dprint("Jugador desbloqueado tras cancelación")
+
+	elseif message_id == hash("pause_movement") then
+		self.dialog_active = true
+
+	elseif message_id == hash("resume_movement") then
+		self.dialog_active = false
+
+	elseif message_id == hash("start_talking") then
+		set_talking_animation(self, true)
+
+	elseif message_id == hash("stop_talking") then
+		set_talking_animation(self, false)
+
+	elseif message_id == hash("attack_direction") then
+		-- 🧍 Gate defensivo: si el jugador está muerto, ignorar la orden de
+		--    ataque. player_spray ya bloquea el envío (player_died), pero este
+		--    guard extra garantiza que la animación de muerte nunca sea
+		--    sobrescrita por la de ataque (defensa en profundidad).
+		if not self.is_dead then
+			play_attack_animation(self, message.direction)
+		end
+
+	elseif message_id == hash("stop_attack") then
+		if self.is_attacking then
+			self.is_attacking = false
+			self.attack_dir = nil
+			self.was_moving_during_attack = false
+			update_animation(self)
+		end
+
+	elseif message_id == hash("taken_damage") then
+		-- Si está muerto, ignorar el mensaje para que no sobreescriba la animación de muerte
+		if not self.is_dead then
+			-- 💀 Registrar la causa de la muerte para discriminar el mensaje de
+			--    derrota del HUD: el coche envía source = "car"; las plagas no
+			--    envían source → nil → "pest" (fight_defeat por defecto).
+			if message.source then
+				self.death_cause = message.source
+			end
+			play_damage_animation(self)
+		end
+	end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+function on_reload(self)
+	dprint("Player script recargado")
+	self.dialog_active = false
+	self.can_cancel_dialog = true
+	self.is_talking = false
+	self.is_attacking = false
+	self.attack_dir = nil
+	self.was_moving_during_attack = false
+	self.damage_timer = 0
+	self.is_walking = false
+	self.is_dead = false
+	-- 🪳 Hot-reload estando muerto: reanudar también las oleadas (emparejado
+	--    con set_waves_paused(true) de trigger_death; sin esto los spawners
+	--    quedarían pausados para siempre).
+	enemy_state.set_waves_paused(false)
+	-- 🧍 Hot-reload del editor: re-sincronizar el spray (si se recarga
+	--    estando muerto, player_spray quedaría bloqueado para siempre).
+	msg.post("#player_spray", "player_respawned")
+	-- 📱 Sensor de interacción: mismo trato en hot-reload
+	msg.post("#player_interact", "player_respawned")
+	self.exhausted = false
+	self.is_blocked_by_wall = false
+	self.last_direction = vmath.vector3()
+	self.blocked_normal = vmath.vector3()
+	self.push_pos = vmath.vector3()
+	self.push_neg = vmath.vector3()
+	self.movement_speed = self.base_movement_speed or 150
+end

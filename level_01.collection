@@ -1,0 +1,2803 @@
+name: "level_01"
+instances {
+  id: "player"
+  prototype: "/features/player/player.go"
+  children: "player_spray"
+  position {
+    x: 1156.0
+    y: 664.0
+    z: 0.1
+  }
+}
+instances {
+  id: "game_manager"
+  prototype: "/main/game_manager.go"
+}
+instances {
+  id: "enemy_cockroach"
+  prototype: "/features/enemy_cockroach/enemy_cockroach.go"
+  position {
+    x: 609.0
+    y: 1930.0
+    z: 1.0
+  }
+  scale3 {
+    x: 0.5
+    y: 0.5
+  }
+}
+instances {
+  id: "bullet"
+  prototype: "/features/props/bullet.go"
+}
+instances {
+  id: "ME_16061"
+  prototype: "/features/exhibition_objects/ME_16061.go"
+  position {
+    x: 1763.0
+    y: 551.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_45681"
+  prototype: "/features/exhibition_objects/ME_45681.go"
+  position {
+    x: 1410.0
+    y: 499.0
+    z: 0.3
+  }
+}
+instances {
+  id: "inventory_manager"
+  prototype: "/main/inventory_manager.go"
+}
+instances {
+  id: "btn_collectible"
+  prototype: "/features/collectibles/btn_collectible.go"
+  position {
+    x: 1584.0
+    y: 1944.0
+    z: 1.0
+  }
+}
+instances {
+  id: "collectible_object"
+  prototype: "/features/collectibles/collectible_object.go"
+  position {
+    x: 1584.0
+    y: 1970.0
+    z: 1.0
+  }
+}
+instances {
+  id: "door_front"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 1152.0
+    y: 868.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 969.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "kit_health"
+  prototype: "/features/props/kit_health.go"
+  position {
+    x: 975.0
+    y: 1040.0
+    z: 0.1
+  }
+}
+instances {
+  id: "spray_spawn_container"
+  prototype: "/features/props/spray_spawn_container.go"
+  children: "spray_spawn_01"
+  children: "spray_spawn_02"
+  children: "spray_spawn_03"
+  children: "spray_spawn_04"
+  children: "spray_spawn_05"
+  children: "spray_spawn_06"
+}
+instances {
+  id: "nest_container"
+  prototype: "/features/props/nest_container.go"
+  children: "nest_spawn_01"
+  children: "nest_spawn_02"
+  children: "nest_spawn_03"
+  children: "nest_spawn_04"
+  children: "nest_spawn_05"
+  children: "nest_spawn_06"
+  children: "nest_spawn_07"
+  children: "nest_spawn_08"
+  children: "nest_spawn_09"
+  children: "nest_spawn_10"
+}
+instances {
+  id: "bookcase_pal"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1200.0
+    y: 1264.0
+    z: 0.15
+  }
+}
+instances {
+  id: "door_main"
+  prototype: "/features/props/door_main.go"
+  position {
+    x: 1152.0
+    y: 512.0
+    z: 0.01
+  }
+}
+instances {
+  id: "door_service"
+  prototype: "/features/props/door_service.go"
+  position {
+    x: 1472.0
+    y: 2042.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_service"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "zone_storage"
+  prototype: "/features/props/zone_storage.go"
+  position {
+    x: 608.0
+    y: 921.0
+    z: 1.0
+  }
+}
+instances {
+  id: "door_side1"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 969.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_service1"
+  prototype: "/features/props/door_service.go"
+  position {
+    x: 832.0
+    y: 2042.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_service"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_main1"
+  prototype: "/features/props/door_main.go"
+  position {
+    x: 1152.0
+    y: 640.0
+    z: 0.01
+  }
+}
+instances {
+  id: "door_front1"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 1152.0
+    y: 1093.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "kit_stamina"
+  prototype: "/features/props/kit_stamina.go"
+  position {
+    x: 1336.0
+    y: 1039.0
+    z: 0.15
+  }
+}
+instances {
+  id: "ME_20"
+  prototype: "/features/exhibition_objects/ME_20.go"
+  position {
+    x: 1630.0
+    y: 1281.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_132"
+  prototype: "/features/exhibition_objects/ME_132.go"
+  position {
+    x: 1696.0
+    y: 1850.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_1905"
+  prototype: "/features/exhibition_objects/ME_1905.go"
+  position {
+    x: 1629.0
+    y: 1366.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_1911"
+  prototype: "/features/exhibition_objects/ME_1911.go"
+  position {
+    x: 1629.0
+    y: 1322.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_2899"
+  prototype: "/features/exhibition_objects/ME_2899.go"
+  position {
+    x: 1665.0
+    y: 1154.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_3098"
+  prototype: "/features/exhibition_objects/ME_3098.go"
+  position {
+    x: 1765.0
+    y: 981.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_3541"
+  prototype: "/features/exhibition_objects/ME_3541.go"
+  position {
+    x: 1763.0
+    y: 1018.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_3662"
+  prototype: "/features/exhibition_objects/ME_3662.go"
+  position {
+    x: 1660.0
+    y: 1038.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_4225"
+  prototype: "/features/exhibition_objects/ME_4225.go"
+  position {
+    x: 1742.0
+    y: 900.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_4302"
+  prototype: "/features/exhibition_objects/ME_4302.go"
+  position {
+    x: 1765.0
+    y: 947.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_4946"
+  prototype: "/features/exhibition_objects/ME_4946.go"
+  position {
+    x: 1627.0
+    y: 1578.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_4947"
+  prototype: "/features/exhibition_objects/ME_4947.go"
+  position {
+    x: 1672.0
+    y: 1577.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_4948"
+  prototype: "/features/exhibition_objects/ME_4948.go"
+  position {
+    x: 1671.0
+    y: 1472.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5090"
+  prototype: "/features/exhibition_objects/ME_5090.go"
+  position {
+    x: 1627.0
+    y: 849.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5099"
+  prototype: "/features/exhibition_objects/ME_5099.go"
+  position {
+    x: 1629.0
+    y: 798.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5117"
+  prototype: "/features/exhibition_objects/ME_5117.go"
+  position {
+    x: 1648.0
+    y: 894.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5140"
+  prototype: "/features/exhibition_objects/ME_5140.go"
+  position {
+    x: 1765.0
+    y: 758.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5225"
+  prototype: "/features/exhibition_objects/ME_5225.go"
+  position {
+    x: 1625.0
+    y: 877.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5267"
+  prototype: "/features/exhibition_objects/ME_5267.go"
+  position {
+    x: 1765.0
+    y: 881.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_5271"
+  prototype: "/features/exhibition_objects/ME_5271.go"
+  position {
+    x: 1765.0
+    y: 854.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_6209"
+  prototype: "/features/exhibition_objects/ME_6209.go"
+  position {
+    x: 1649.0
+    y: 1853.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_6350"
+  prototype: "/features/exhibition_objects/ME_6350.go"
+  position {
+    x: 1552.0
+    y: 539.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_6560"
+  prototype: "/features/exhibition_objects/ME_6560.go"
+  position {
+    x: 1630.0
+    y: 1469.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_7622"
+  prototype: "/features/exhibition_objects/ME_7622.go"
+  position {
+    x: 1764.0
+    y: 1105.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_7634"
+  prototype: "/features/exhibition_objects/ME_7634.go"
+  position {
+    x: 1763.0
+    y: 1071.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_13570"
+  prototype: "/features/exhibition_objects/ME_13570.go"
+  position {
+    x: 1766.0
+    y: 1204.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_13588"
+  prototype: "/features/exhibition_objects/ME_13588.go"
+  position {
+    x: 1747.0
+    y: 1854.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_13590"
+  prototype: "/features/exhibition_objects/ME_13590.go"
+  position {
+    x: 1692.0
+    y: 1777.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_16121"
+  prototype: "/features/exhibition_objects/ME_16121.go"
+  position {
+    x: 1764.0
+    y: 491.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_17109"
+  prototype: "/features/exhibition_objects/ME_17109.go"
+  position {
+    x: 1765.0
+    y: 606.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_17110"
+  prototype: "/features/exhibition_objects/ME_17110.go"
+  position {
+    x: 1629.0
+    y: 591.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_17727"
+  prototype: "/features/exhibition_objects/ME_17727.go"
+  position {
+    x: 1626.0
+    y: 699.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_17757"
+  prototype: "/features/exhibition_objects/ME_17757.go"
+  position {
+    x: 1628.0
+    y: 644.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18125"
+  prototype: "/features/exhibition_objects/ME_18125.go"
+  position {
+    x: 1628.0
+    y: 617.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18169"
+  prototype: "/features/exhibition_objects/ME_18169.go"
+  position {
+    x: 1764.0
+    y: 638.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18558"
+  prototype: "/features/exhibition_objects/ME_18558.go"
+  position {
+    x: 1651.0
+    y: 699.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18649"
+  prototype: "/features/exhibition_objects/ME_18649.go"
+  position {
+    x: 1740.0
+    y: 696.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18704"
+  prototype: "/features/exhibition_objects/ME_18704.go"
+  position {
+    x: 1763.0
+    y: 520.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_18888"
+  prototype: "/features/exhibition_objects/ME_18888.go"
+  position {
+    x: 1764.0
+    y: 666.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_19002"
+  prototype: "/features/exhibition_objects/ME_19002.go"
+  position {
+    x: 1628.0
+    y: 670.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_19014"
+  prototype: "/features/exhibition_objects/ME_19014.go"
+  position {
+    x: 1767.0
+    y: 696.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_19635"
+  prototype: "/features/exhibition_objects/ME_19635.go"
+  position {
+    x: 1763.0
+    y: 576.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_20045"
+  prototype: "/features/exhibition_objects/ME_20045.go"
+  position {
+    x: 1765.0
+    y: 463.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_20175"
+  prototype: "/features/exhibition_objects/ME_20175.go"
+  position {
+    x: 1627.0
+    y: 560.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_20507"
+  prototype: "/features/exhibition_objects/ME_20507.go"
+  position {
+    x: 1628.0
+    y: 535.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_22253"
+  prototype: "/features/exhibition_objects/ME_22253.go"
+  position {
+    x: 1766.0
+    y: 1236.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_23871"
+  prototype: "/features/exhibition_objects/ME_23871.go"
+  position {
+    x: 1764.0
+    y: 796.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_23981"
+  prototype: "/features/exhibition_objects/ME_23981.go"
+  position {
+    x: 1629.0
+    y: 1096.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_23982"
+  prototype: "/features/exhibition_objects/ME_23982.go"
+  position {
+    x: 1665.0
+    y: 1016.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_23983"
+  prototype: "/features/exhibition_objects/ME_23983.go"
+  position {
+    x: 1640.0
+    y: 1027.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_24008"
+  prototype: "/features/exhibition_objects/ME_24008.go"
+  position {
+    x: 1378.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_24226"
+  prototype: "/features/exhibition_objects/ME_24226.go"
+  position {
+    x: 1409.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_43452"
+  prototype: "/features/exhibition_objects/ME_43452.go"
+  position {
+    x: 1583.0
+    y: 539.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_43666"
+  prototype: "/features/exhibition_objects/ME_43666.go"
+  position {
+    x: 1450.0
+    y: 539.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_43737"
+  prototype: "/features/exhibition_objects/ME_43737.go"
+  position {
+    x: 1520.0
+    y: 538.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_100002"
+  prototype: "/features/exhibition_objects/ME_100002.go"
+  position {
+    x: 1352.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_100003"
+  prototype: "/features/exhibition_objects/ME_100003.go"
+  position {
+    x: 1325.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_100004"
+  prototype: "/features/exhibition_objects/ME_100004.go"
+  position {
+    x: 1273.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "ME_100005"
+  prototype: "/features/exhibition_objects/ME_100005.go"
+  position {
+    x: 1299.0
+    y: 537.0
+    z: 0.3
+  }
+}
+instances {
+  id: "slot_showcase_pal"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1489.0
+    y: 536.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "pal"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_shelf_pal"
+  prototype: "/features/furniture/slot_shelf.go"
+  position {
+    x: 648.0
+    y: 622.0
+    z: 0.16
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "shelf"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "pal"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_shelf_neo"
+  prototype: "/features/furniture/slot_shelf.go"
+  position {
+    x: 568.0
+    y: 623.0
+    z: 0.16
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "shelf"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "neo"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_shelf_bro"
+  prototype: "/features/furniture/slot_shelf.go"
+  position {
+    x: 568.0
+    y: 720.0
+    z: 0.16
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "shelf"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "bro"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_shelf_ibe"
+  prototype: "/features/furniture/slot_shelf.go"
+  position {
+    x: 551.0
+    y: 852.0
+    z: 0.16
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "shelf"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "ibe"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_shelf_rom"
+  prototype: "/features/furniture/slot_shelf.go"
+  position {
+    x: 552.0
+    y: 1008.0
+    z: 0.16
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "shelf"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "rom"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "bookcase_neo"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1104.0
+    y: 1264.0
+    z: 0.15
+  }
+  component_properties {
+    id: "bookcase"
+    properties {
+      id: "book_type"
+      value: "neo"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "bookcase_bro"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1104.0
+    y: 1392.0
+    z: 0.15
+  }
+  component_properties {
+    id: "bookcase"
+    properties {
+      id: "book_type"
+      value: "bro"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "bookcase_ibe"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1200.0
+    y: 1393.0
+    z: 0.15
+  }
+  component_properties {
+    id: "bookcase"
+    properties {
+      id: "book_type"
+      value: "ibe"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "bookcase_rom"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1200.0
+    y: 1520.0
+    z: 0.15
+  }
+  component_properties {
+    id: "bookcase"
+    properties {
+      id: "book_type"
+      value: "rom"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "bookcase_restor"
+  prototype: "/features/furniture/bookcase.go"
+  position {
+    x: 1104.0
+    y: 1520.0
+    z: 0.15
+  }
+  component_properties {
+    id: "bookcase"
+    properties {
+      id: "book_type"
+      value: "restor"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "npc_02"
+  prototype: "/features/npc_02/npc_02.go"
+  position {
+    x: 1159.0
+    y: 761.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_01"
+  prototype: "/features/npc_01/npc_01.go"
+  position {
+    x: 817.0
+    y: 768.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_11"
+  prototype: "/features/npc_11/npc_11.go"
+  position {
+    x: 1394.0
+    y: 654.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "npc_type"
+      value: "quiz_restoration"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "cat"
+  prototype: "/features/cat/cat.go"
+  position {
+    x: 1366.0
+    y: 407.0
+    z: 0.1
+  }
+}
+instances {
+  id: "npc_03"
+  prototype: "/features/npc_03/npc_03.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_04"
+  prototype: "/features/npc_04/npc_04.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_05"
+  prototype: "/features/npc_05/npc_05.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_06"
+  prototype: "/features/npc_06/npc_06.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_07"
+  prototype: "/features/npc_07/npc_07.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_08"
+  prototype: "/features/npc_08/npc_08.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_09"
+  prototype: "/features/npc_09/npc_09.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_10"
+  prototype: "/features/npc_10/npc_10.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "patrol_enabled"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_12"
+  prototype: "/features/npc_12/npc_12.go"
+  position {
+    x: 1072.0
+    y: 1747.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "npc_type"
+      value: "quiz_false"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "npc_13"
+  prototype: "/features/npc_13/npc_13.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "npc_type"
+      value: "quiz_false"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "spawn_npcs"
+  prototype: "/features/npc/npc_spawn_manager.go"
+  children: "spawn_npc_01"
+  children: "spawn_npc_02"
+  children: "spawn_npc_03"
+  children: "spawn_npc_04"
+  children: "spawn_npc_05"
+  children: "spawn_npc_06"
+  children: "spawn_npc_07"
+  children: "spawn_npc_08"
+  children: "spawn_npc_09"
+  children: "spawn_npc_10"
+  children: "spawn_npc_11"
+  children: "spawn_npc_12"
+  children: "spawn_npc_13"
+  children: "spawn_npc_14"
+  children: "spawn_npc_cat"
+}
+instances {
+  id: "food_spawn_container"
+  prototype: "/features/props/food_spawn_container.go"
+  children: "food_spawn_01"
+  children: "food_spawn_02"
+  children: "food_spawn_03"
+}
+instances {
+  id: "door_main2"
+  prototype: "/features/props/door_main.go"
+  position {
+    x: 1152.0
+    y: 2077.0
+    z: 0.01
+  }
+}
+instances {
+  id: "slot_showcase_pal1"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1696.0
+    y: 507.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "pal"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_neo"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1764.0
+    y: 826.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "neo"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_neo1"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1627.0
+    y: 824.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "neo"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_bro"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1669.0
+    y: 1094.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "bro"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_bro1"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1764.0
+    y: 1043.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "bro"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_ibe"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1765.0
+    y: 1177.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "ibe"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_ibe1"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1680.0
+    y: 1242.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "ibe"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_rom"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1664.0
+    y: 1626.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "rom"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "slot_showcase_rom2"
+  prototype: "/features/furniture/slot_showcase.go"
+  position {
+    x: 1764.0
+    y: 1819.0
+  }
+  component_properties {
+    id: "slot_furniture"
+    properties {
+      id: "slot_type"
+      value: "showcase"
+      type: PROPERTY_TYPE_HASH
+    }
+    properties {
+      id: "period"
+      value: "rom"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+instances {
+  id: "door_side2"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1276.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side3"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1276.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_front2"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 1152.0
+    y: 1796.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_front3"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 608.0
+    y: 1412.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_front4"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 608.0
+    y: 932.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_front5"
+  prototype: "/features/props/door_front.go"
+  position {
+    x: 608.0
+    y: 580.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_front"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side4"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 840.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side5"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 764.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side6"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 668.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side7"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1404.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side8"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1404.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side9"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1480.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side10"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 840.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side11"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 668.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side12"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 764.0
+    y: 1470.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side13"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 668.0
+    y: 1694.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side14"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 764.0
+    y: 1950.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side15"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 840.0
+    y: 1950.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side16"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1404.0
+    y: 1950.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side17"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1480.0
+    y: 1950.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side18"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1576.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side19"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1480.0
+    y: 990.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "false"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side20"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1576.0
+    y: 766.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side21"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1576.0
+    y: 1246.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side22"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1576.0
+    y: 1694.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side23"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 668.0
+    y: 766.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "door_side24"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 668.0
+    y: 1246.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "ME_13561"
+  prototype: "/features/exhibition_objects/ME_13561.go"
+  position {
+    x: 1410.0
+    y: 1869.0
+    z: 0.1
+  }
+}
+instances {
+  id: "ME_13564"
+  prototype: "/features/exhibition_objects/ME_13564.go"
+  position {
+    x: 1530.0
+    y: 1868.0
+    z: 0.1
+  }
+}
+instances {
+  id: "office_cabinet"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 921.0
+    y: 1524.0
+    z: 0.19
+  }
+}
+instances {
+  id: "office_cabinet1"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 921.0
+    y: 1044.0
+    z: 0.19
+  }
+}
+instances {
+  id: "office_cabinet2"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 1298.0
+    y: 2004.0
+    z: 0.19
+  }
+}
+instances {
+  id: "office_cabinet3"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 733.0
+    y: 1044.0
+    z: 0.19
+  }
+  scale3 {
+    x: 0.9
+  }
+}
+instances {
+  id: "office_cabinet4"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 1055.0
+    y: 1071.0
+    z: 0.19
+  }
+}
+instances {
+  id: "office_cabinet5"
+  prototype: "/features/furniture/office_cabinet.go"
+  position {
+    x: 1561.0
+    y: 1523.0
+    z: 0.19
+  }
+}
+instances {
+  id: "zone_intake"
+  prototype: "/features/props/zone_intake.go"
+  position {
+    x: 1641.0
+    y: 1937.0
+    z: 1.0
+  }
+}
+instances {
+  id: "door_side25"
+  prototype: "/features/props/door_side.go"
+  position {
+    x: 1224.0
+    y: 510.0
+    z: 0.01
+  }
+  component_properties {
+    id: "door_side"
+    properties {
+      id: "climate_control"
+      value: "true"
+      type: PROPERTY_TYPE_BOOLEAN
+    }
+  }
+}
+instances {
+  id: "npc_14"
+  prototype: "/features/npc_13/npc_13.go"
+  position {
+    x: -100.0
+    z: 0.1
+  }
+  component_properties {
+    id: "npc"
+    properties {
+      id: "npc_type"
+      value: "quiz_false"
+      type: PROPERTY_TYPE_HASH
+    }
+  }
+}
+scale_along_z: 0
+embedded_instances {
+  id: "climate_controller"
+  data: "components {\n"
+  "  id: \"climate_controller\"\n"
+  "  component: \"/main/climate_controller.script\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"siren\"\n"
+  "  component: \"/assets/sounds/warning_siren_loop.sound\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "player_spawn_point"
+  data: ""
+  position {
+    x: 1156.0
+    y: 914.0
+    z: 0.1
+  }
+}
+embedded_instances {
+  id: "level2"
+  children: "npcs"
+  data: "components {\n"
+  "  id: \"level_map_1\"\n"
+  "  component: \"/assets/tiles/level_map_1.tilemap\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"collision_shape: \\\"/assets/tiles/level_map_1.tilemap\\\"\\n"
+  "type: COLLISION_OBJECT_TYPE_STATIC\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"walls\\\"\\n"
+  "mask: \\\"player\\\"\\n"
+  "\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject1\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"collision_shape: \\\"/assets/tiles/level_map_1.tilemap\\\"\\n"
+  "type: COLLISION_OBJECT_TYPE_STATIC\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"walls\\\"\\n"
+  "mask: \\\"enemies\\\"\\n"
+  "\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject2\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"collision_shape: \\\"/assets/tiles/level_map_1.tilemap\\\"\\n"
+  "type: COLLISION_OBJECT_TYPE_STATIC\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"walls\\\"\\n"
+  "mask: \\\"npcs\\\"\\n"
+  "\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "camera"
+  data: "components {\n"
+  "  id: \"camera1\"\n"
+  "  component: \"/main/camera.script\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"camera\"\n"
+  "  type: \"camera\"\n"
+  "  data: \"aspect_ratio: 1.0\\n"
+  "fov: 0.7854\\n"
+  "near_z: 0.1\\n"
+  "far_z: 20.0\\n"
+  "orthographic_projection: 1\\n"
+  "orthographic_zoom: 2.0\\n"
+  "\"\n"
+  "}\n"
+  ""
+  position {
+    x: 1156.0
+    y: 664.0
+    z: 10.0
+  }
+}
+embedded_instances {
+  id: "cursor"
+  data: "components {\n"
+  "  id: \"cursor\"\n"
+  "  component: \"/main/cursor.script\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"type: COLLISION_OBJECT_TYPE_TRIGGER\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"cursor\\\"\\n"
+  "mask: \\\"interactivable\\\"\\n"
+  "embedded_collision_shape {\\n"
+  "  shapes {\\n"
+  "    shape_type: TYPE_BOX\\n"
+  "    position {\\n"
+  "    }\\n"
+  "    rotation {\\n"
+  "    }\\n"
+  "    index: 0\\n"
+  "    count: 3\\n"
+  "    id: \\\"cursor\\\"\\n"
+  "  }\\n"
+  "  data: 2.0\\n"
+  "  data: 2.0\\n"
+  "  data: 2.0\\n"
+  "}\\n"
+  "\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "gui"
+  data: "components {\n"
+  "  id: \"interactive\"\n"
+  "  component: \"/gui/interactive.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"hud\"\n"
+  "  component: \"/gui/hud.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"exhibition\"\n"
+  "  component: \"/gui/exhibition.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"smooth_notification\"\n"
+  "  component: \"/assets/sounds/smooth_notification.sound\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "exhibition_objects"
+  children: "ME_100002"
+  children: "ME_100003"
+  children: "ME_100004"
+  children: "ME_100005"
+  children: "ME_132"
+  children: "ME_13561"
+  children: "ME_13564"
+  children: "ME_13570"
+  children: "ME_13588"
+  children: "ME_13590"
+  children: "ME_16061"
+  children: "ME_16121"
+  children: "ME_17109"
+  children: "ME_17110"
+  children: "ME_17727"
+  children: "ME_17757"
+  children: "ME_18125"
+  children: "ME_18169"
+  children: "ME_18558"
+  children: "ME_18649"
+  children: "ME_18704"
+  children: "ME_18888"
+  children: "ME_19002"
+  children: "ME_19014"
+  children: "ME_1905"
+  children: "ME_1911"
+  children: "ME_19635"
+  children: "ME_20"
+  children: "ME_20045"
+  children: "ME_20175"
+  children: "ME_20507"
+  children: "ME_22253"
+  children: "ME_23871"
+  children: "ME_23981"
+  children: "ME_23982"
+  children: "ME_23983"
+  children: "ME_24008"
+  children: "ME_24226"
+  children: "ME_2899"
+  children: "ME_3098"
+  children: "ME_3541"
+  children: "ME_3662"
+  children: "ME_4225"
+  children: "ME_4302"
+  children: "ME_43452"
+  children: "ME_43666"
+  children: "ME_43737"
+  children: "ME_45681"
+  children: "ME_4946"
+  children: "ME_4947"
+  children: "ME_4948"
+  children: "ME_5090"
+  children: "ME_5099"
+  children: "ME_5117"
+  children: "ME_5140"
+  children: "ME_5225"
+  children: "ME_5267"
+  children: "ME_5271"
+  children: "ME_6209"
+  children: "ME_6350"
+  children: "ME_6560"
+  children: "ME_7622"
+  children: "ME_7634"
+  data: ""
+}
+embedded_instances {
+  id: "enemies"
+  children: "enemy_cockroach"
+  data: ""
+}
+embedded_instances {
+  id: "spawn_enemies"
+  data: "components {\n"
+  "  id: \"spawn_enemies\"\n"
+  "  component: \"/main/spawn_enemies.script\"\n"
+  "  properties {\n"
+  "    id: \"spawn_interval\"\n"
+  "    value: \"2.5\"\n"
+  "    type: PROPERTY_TYPE_NUMBER\n"
+  "  }\n"
+  "  properties {\n"
+  "    id: \"enemy_type\"\n"
+  "    value: \"mix\"\n"
+  "    type: PROPERTY_TYPE_HASH\n"
+  "  }\n"
+  "  properties {\n"
+  "    id: \"reactivate_delay\"\n"
+  "    value: \"5.0\"\n"
+  "    type: PROPERTY_TYPE_NUMBER\n"
+  "  }\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"type: COLLISION_OBJECT_TYPE_TRIGGER\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"spawn\\\"\\n"
+  "mask: \\\"player_spawn\\\"\\n"
+  "embedded_collision_shape {\\n"
+  "  shapes {\\n"
+  "    shape_type: TYPE_SPHERE\\n"
+  "    position {\\n"
+  "    }\\n"
+  "    rotation {\\n"
+  "    }\\n"
+  "    index: 0\\n"
+  "    count: 1\\n"
+  "  }\\n"
+  "  data: 50.0\\n"
+  "}\\n"
+  "\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"bug_factory\"\n"
+  "  type: \"factory\"\n"
+  "  data: \"prototype: \\\"/features/enemy_cockroach/enemy_cockroach.go\\\"\\n"
+  "\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"rat_factory\"\n"
+  "  type: \"factory\"\n"
+  "  data: \"prototype: \\\"/features/enemy_rat/enemy_rat.go\\\"\\n"
+  "\"\n"
+  "}\n"
+  ""
+  position {
+    x: 1850.0
+    y: 387.0
+    z: 0.1
+  }
+}
+embedded_instances {
+  id: "player_spray"
+  data: "embedded_components {\n"
+  "  id: \"factory\"\n"
+  "  type: \"factory\"\n"
+  "  data: \"prototype: \\\"/features/props/bullet.go\\\"\\n"
+  "\"\n"
+  "}\n"
+  ""
+  position {
+    z: 1.0
+  }
+}
+embedded_instances {
+  id: "props"
+  children: "bullet"
+  children: "car_end_point"
+  children: "car_start_point"
+  children: "food_spawn_container"
+  children: "kit_health"
+  children: "kit_stamina"
+  children: "spray_spawn_container"
+  data: ""
+}
+embedded_instances {
+  id: "furniture"
+  children: "bookcase_bro"
+  children: "bookcase_ibe"
+  children: "bookcase_neo"
+  children: "bookcase_pal"
+  children: "bookcase_restor"
+  children: "bookcase_rom"
+  children: "door_front"
+  children: "door_front1"
+  children: "door_front2"
+  children: "door_front3"
+  children: "door_front4"
+  children: "door_front5"
+  children: "door_main"
+  children: "door_main1"
+  children: "door_main2"
+  children: "door_service"
+  children: "door_service1"
+  children: "door_side"
+  children: "door_side1"
+  children: "door_side10"
+  children: "door_side11"
+  children: "door_side12"
+  children: "door_side13"
+  children: "door_side14"
+  children: "door_side15"
+  children: "door_side16"
+  children: "door_side17"
+  children: "door_side18"
+  children: "door_side19"
+  children: "door_side2"
+  children: "door_side20"
+  children: "door_side21"
+  children: "door_side22"
+  children: "door_side23"
+  children: "door_side24"
+  children: "door_side25"
+  children: "door_side3"
+  children: "door_side4"
+  children: "door_side5"
+  children: "door_side6"
+  children: "door_side7"
+  children: "door_side8"
+  children: "door_side9"
+  children: "office_cabinet"
+  children: "office_cabinet1"
+  children: "office_cabinet2"
+  children: "office_cabinet3"
+  children: "office_cabinet4"
+  children: "office_cabinet5"
+  children: "slot_shelf_bro"
+  children: "slot_shelf_ibe"
+  children: "slot_shelf_neo"
+  children: "slot_shelf_pal"
+  children: "slot_shelf_rom"
+  children: "slot_showcase_bro"
+  children: "slot_showcase_bro1"
+  children: "slot_showcase_ibe"
+  children: "slot_showcase_ibe1"
+  children: "slot_showcase_neo"
+  children: "slot_showcase_neo1"
+  children: "slot_showcase_pal"
+  children: "slot_showcase_pal1"
+  children: "slot_showcase_rom"
+  children: "slot_showcase_rom2"
+  data: ""
+}
+embedded_instances {
+  id: "collectibles"
+  children: "btn_collectible"
+  children: "collectible_object"
+  data: ""
+}
+embedded_instances {
+  id: "spawn_collectibles"
+  data: ""
+  position {
+    x: 545.0
+    y: 201.0
+    z: 0.1
+  }
+}
+embedded_instances {
+  id: "spray_spawn_01"
+  data: ""
+  position {
+    x: 720.0
+    y: 1027.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "spray_spawn_02"
+  data: ""
+  position {
+    x: 721.0
+    y: 1947.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "spray_spawn_03"
+  data: ""
+  position {
+    x: 1203.0
+    y: 1629.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "spray_spawn_04"
+  data: ""
+  position {
+    x: 905.0
+    y: 1030.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "spray_spawn_05"
+  data: ""
+  position {
+    x: 623.0
+    y: 1219.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "spray_spawn_06"
+  data: ""
+  position {
+    x: 623.0
+    y: 751.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "zones_sound"
+  children: "zone_intake"
+  children: "zone_storage"
+  data: "embedded_components {\n"
+  "  id: \"collisionobject_cat\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"type: COLLISION_OBJECT_TYPE_DYNAMIC\\n"
+  "mass: 1.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"walls\\\"\\n"
+  "mask: \\\"npcs\\\"\\n"
+  "embedded_collision_shape {\\n"
+  "  shapes {\\n"
+  "    shape_type: TYPE_BOX\\n"
+  "    position {\\n"
+  "      x: 522.0\\n"
+  "      y: 366.0\\n"
+  "    }\\n"
+  "    rotation {\\n"
+  "    }\\n"
+  "    index: 0\\n"
+  "    count: 3\\n"
+  "  }\\n"
+  "  data: 10.0\\n"
+  "  data: 80.0\\n"
+  "  data: 10.0\\n"
+  "}\\n"
+  "\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "car_start_point"
+  data: "components {\n"
+  "  id: \"car_start_point\"\n"
+  "  component: \"/features/props/car_start_point.script\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"factory_car\"\n"
+  "  type: \"factory\"\n"
+  "  data: \"prototype: \\\"/features/props/car.go\\\"\\n"
+  "\"\n"
+  "}\n"
+  "embedded_components {\n"
+  "  id: \"collisionobject\"\n"
+  "  type: \"collisionobject\"\n"
+  "  data: \"type: COLLISION_OBJECT_TYPE_TRIGGER\\n"
+  "mass: 0.0\\n"
+  "friction: 0.1\\n"
+  "restitution: 0.5\\n"
+  "group: \\\"spawn\\\"\\n"
+  "mask: \\\"player_spawn\\\"\\n"
+  "mask: \\\"car\\\"\\n"
+  "embedded_collision_shape {\\n"
+  "  shapes {\\n"
+  "    shape_type: TYPE_SPHERE\\n"
+  "    position {\\n"
+  "    }\\n"
+  "    rotation {\\n"
+  "    }\\n"
+  "    index: 0\\n"
+  "    count: 1\\n"
+  "  }\\n"
+  "  data: 500.0\\n"
+  "}\\n"
+  "\"\n"
+  "}\n"
+  ""
+  position {
+    x: 435.0
+    y: 180.0
+    z: 0.1
+  }
+}
+embedded_instances {
+  id: "car_end_point"
+  data: ""
+  position {
+    x: 435.0
+    y: 2351.0
+    z: 0.1
+  }
+}
+embedded_instances {
+  id: "npcs"
+  children: "cat"
+  children: "npc_01"
+  children: "npc_02"
+  children: "npc_03"
+  children: "npc_04"
+  children: "npc_05"
+  children: "npc_06"
+  children: "npc_07"
+  children: "npc_08"
+  children: "npc_09"
+  children: "npc_10"
+  children: "npc_11"
+  children: "npc_12"
+  children: "npc_13"
+  children: "npc_14"
+  children: "spawn_npcs"
+  data: ""
+}
+embedded_instances {
+  id: "spawn_npc_cat"
+  data: ""
+  position {
+    x: 878.0
+    y: 400.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_01"
+  data: ""
+  position {
+    x: 1154.0
+    y: 986.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_02"
+  data: ""
+  position {
+    x: 1528.0
+    y: 496.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_03"
+  data: ""
+  position {
+    x: 1702.0
+    y: 618.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_04"
+  data: ""
+  position {
+    x: 1150.0
+    y: 1187.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_05"
+  data: ""
+  position {
+    x: 1694.0
+    y: 817.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_06"
+  data: ""
+  position {
+    x: 843.0
+    y: 1225.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_07"
+  data: ""
+  position {
+    x: 1713.0
+    y: 1023.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_08"
+  data: ""
+  position {
+    x: 1742.0
+    y: 1575.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_09"
+  data: ""
+  position {
+    x: 1715.0
+    y: 1681.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_10"
+  data: ""
+  position {
+    x: 1731.0
+    y: 1442.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_11"
+  data: ""
+  position {
+    x: 644.0
+    y: 1745.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_12"
+  data: ""
+  position {
+    x: 1072.0
+    y: 1747.0
+  }
+}
+embedded_instances {
+  id: "spawn_npc_13"
+  data: ""
+  position {
+    x: 1070.0
+    y: 545.0
+  }
+}
+embedded_instances {
+  id: "food_spawn_01"
+  data: ""
+  position {
+    x: 935.0
+    y: 1531.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "food_spawn_02"
+  data: ""
+  position {
+    x: 941.0
+    y: 1022.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "food_spawn_03"
+  data: ""
+  position {
+    x: 1283.0
+    y: 2009.0
+    z: 0.22
+  }
+}
+embedded_instances {
+  id: "nest_spawn_01"
+  data: ""
+  position {
+    x: 553.0
+    y: 885.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_02"
+  data: ""
+  position {
+    x: 693.0
+    y: 1973.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_03"
+  data: ""
+  position {
+    x: 1017.0
+    y: 1973.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_04"
+  data: ""
+  position {
+    x: 661.0
+    y: 1365.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_05"
+  data: ""
+  position {
+    x: 546.0
+    y: 1365.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_06"
+  data: ""
+  position {
+    x: 553.0
+    y: 533.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_07"
+  data: ""
+  position {
+    x: 753.0
+    y: 533.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_08"
+  data: ""
+  position {
+    x: 1530.0
+    y: 1013.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_09"
+  data: ""
+  position {
+    x: 739.0
+    y: 1845.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "nest_spawn_10"
+  data: ""
+  position {
+    x: 1930.0
+    y: 405.0
+    z: 0.01
+  }
+}
+embedded_instances {
+  id: "spawn_npc_14"
+  data: ""
+  position {
+    x: 1230.0
+    y: 1976.0
+  }
+}

@@ -1,0 +1,199 @@
+-- features/props/car_start_point.script
+-- ═══════════════════════════════════════════════════════
+-- 🏁 SPAWN POINT DE COCHES
+-- ═══════════════════════════════════════════════════════
+--
+--   Detecta al jugador por proximidad (trigger, radio 500)
+--   y spawnea coches usando factories.
+--
+--   También detecta coches cerca del spawn (vía collisionobject_car_body)
+--   y evita spawnear si ya hay coches en la zona.
+--
+--   Usa un único factory (factory_car) que apunta a car.go.
+--   El aspecto del coche se elige aleatoriamente en el script del coche.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local config = require "main.config"
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_CAR_SPAWN = false
+local dprint = config.make_log(DEBUG_CAR_SPAWN)
+
+-- ⚙️ CONFIGURACIÓN
+local MAX_ACTIVE_CARS = 3        -- máximo de coches activos simultáneamente
+local SPAWN_INTERVAL = 1.5       -- segundos entre spawns
+local SPAWN_COOLDOWN = 0.3       -- cooldown post-spawn (evita race condition con trigger)
+local CAR_FACTORY = "#factory_car"  -- factory única (el script del coche elige atlas)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): spawn_car y cleanup_all_cars están definidas
+-- MÁS ABAJO pero son llamadas desde update() y on_message(). Forward declaration:
+-- los callers las capturan como upvalues y las definiciones posteriores
+-- 'function X(self)' asignan a estos locales (patrón de Fases 1-3).
+local spawn_car
+local cleanup_all_cars
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.active_cars = 0
+	self.spawn_timer = 0
+	self.spawn_queue = 0           -- coches pendientes de spawn
+	self.player_in_range = false
+	self.cars_nearby_count = 0     -- contador de coches en zona de spawn
+	self.post_spawn_cooldown = 0   -- cooldown tras spawn (evita race condition)
+	self.car_ids = {}              -- IDs de coches activos (para limpieza al salir)
+
+	dprint("[car_start_point] Inicializado. Factory: " .. CAR_FACTORY)
+end
+
+-- ═══════════════════════════════════════════════════════
+
+function update(self, dt)
+	if not self.player_in_range then return end
+
+	-- Cooldown post-spawn: esperar a que la física registre el coche en el trigger
+	if self.post_spawn_cooldown > 0 then
+		self.post_spawn_cooldown = self.post_spawn_cooldown - dt
+		return  -- no procesar nada durante el cooldown
+	end
+
+	if self.cars_nearby_count > 0 then return end  -- no spawn si hay coches cerca
+
+	-- Procesar cola de spawns
+	if self.spawn_queue > 0 then
+		self.spawn_timer = self.spawn_timer - dt
+		if self.spawn_timer <= 0 then
+			spawn_car(self)
+			self.spawn_queue = self.spawn_queue - 1
+			if self.spawn_queue > 0 then
+				self.spawn_timer = SPAWN_INTERVAL
+			end
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚗 SPAWN DE UN COCHE
+-- ═══════════════════════════════════════════════════════
+
+function spawn_car(self)
+	if self.active_cars >= MAX_ACTIVE_CARS then
+		dprint("[car_start_point] Máximo de coches activos alcanzado (" .. MAX_ACTIVE_CARS .. ")")
+		return
+	end
+
+	-- Posición de spawn: posición del car_start_point
+	local spawn_pos = go.get_position()
+
+	local ok, car_id = pcall(factory.create, CAR_FACTORY, spawn_pos)
+	if ok then
+		-- Guardar ID del coche para poder destruirlo cuando el jugador se aleje
+		table.insert(self.car_ids, car_id)
+		self.active_cars = self.active_cars + 1
+		-- Activar cooldown post-spawn: el coche recién creado aún no ha sido
+		-- detectado por el trigger de la física (tarda 1 frame). Este cooldown
+		-- evita que se spawneen múltiples coches antes de que cars_nearby_count
+		-- se actualice.
+		self.post_spawn_cooldown = SPAWN_COOLDOWN
+		dprint("[car_start_point] 🚗 Coche spawneado. Activos: " .. self.active_cars)
+	else
+		print("[car_start_point] ⚠️ Error al spawnear con " .. CAR_FACTORY)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- 🎯 Trigger: jugador o coche entra/sale del radio de detección
+	if message_id == hash("trigger_response") then
+		if message.other_group == hash("player_spawn") then
+			-- Jugador
+			if message.enter then
+				if not self.player_in_range then
+					self.player_in_range = true
+					-- Iniciar spawn de coches si no hay coches cerca
+					if self.cars_nearby_count == 0 and self.post_spawn_cooldown <= 0 then
+						self.spawn_queue = MAX_ACTIVE_CARS
+						-- Usar intervalo completo para evitar spawn instantáneo en oscilación
+						self.spawn_timer = SPAWN_INTERVAL
+						dprint("[car_start_point] 👀 Jugador detectado. Iniciando spawn de " .. MAX_ACTIVE_CARS .. " coches")
+					else
+						dprint("[car_start_point] 👀 Jugador detectado, pero hay coches cerca. Esperando...")
+					end
+				end
+			else
+				self.player_in_range = false
+				-- 🧹 Limpiar todos los coches activos cuando el jugador se aleja
+				cleanup_all_cars(self)
+				dprint("[car_start_point] 👋 Jugador fuera de rango. Coches limpiados.")
+			end
+
+		elseif message.other_group == hash("car") then
+			-- Coche (collisionobject_car_body)
+			if message.enter then
+				self.cars_nearby_count = self.cars_nearby_count + 1
+				-- Pausar spawns si hay coches en la zona
+				self.spawn_queue = 0
+				dprint("[car_start_point] 🚗 Coche en zona de spawn. Pausando spawns (" .. self.cars_nearby_count .. " cerca)")
+			else
+				self.cars_nearby_count = math.max(0, self.cars_nearby_count - 1)
+				dprint("[car_start_point] Coche salió de zona de spawn (" .. self.cars_nearby_count .. " cerca)")
+				-- Reanudar spawns si el jugador sigue en rango y no hay coches
+				if self.player_in_range and self.cars_nearby_count == 0 and self.active_cars < MAX_ACTIVE_CARS then
+					self.spawn_queue = MAX_ACTIVE_CARS - self.active_cars
+					self.spawn_timer = SPAWN_INTERVAL
+					dprint("[car_start_point] Zona libre. Reanudando spawn (" .. self.spawn_queue .. " coches)")
+				end
+			end
+		end
+
+	-- 💀 Notificación de que un coche fue destruido/eliminado
+	elseif message_id == hash("car_destroyed") then
+		-- Remover el ID del coche de la tabla de seguimiento
+		for i, car_id in ipairs(self.car_ids) do
+			-- sender es msg.url, car_id es hash de factory.create()
+			-- sender.path obtiene el hash del game object
+			if sender.path == car_id then
+				table.remove(self.car_ids, i)
+				break
+			end
+		end
+
+		self.active_cars = math.max(0, self.active_cars - 1)
+		-- Limpiar cola pendiente para evitar spawns extra
+		self.spawn_queue = 0
+		dprint("[car_start_point] Coche destruido. Activos: " .. self.active_cars)
+
+		-- Decrementar contador de coches cercanos (por si se destruyó dentro del trigger)
+		self.cars_nearby_count = math.max(0, self.cars_nearby_count - 1)
+
+		-- Reponer coche SOLO si el jugador sigue en rango
+		if self.player_in_range and self.cars_nearby_count == 0 and self.active_cars < MAX_ACTIVE_CARS then
+			spawn_car(self)
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧹 LIMPIEZA DE COCHES AL SALIR EL JUGADOR
+-- ═══════════════════════════════════════════════════════
+
+function cleanup_all_cars(self)
+	-- Destruir todos los coches activos (su final() enviará car_destroyed,
+	-- pero los contadores ya se resetearon así que math.max(0, ...) los protege)
+	for _, car_id in ipairs(self.car_ids) do
+		pcall(go.delete, car_id)
+	end
+
+	-- Resetear todo el estado
+	self.car_ids = {}
+	self.active_cars = 0
+	self.cars_nearby_count = 0
+	self.spawn_queue = 0
+	self.post_spawn_cooldown = 0
+end

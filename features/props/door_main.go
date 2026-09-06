@@ -1,0 +1,142 @@
+components {
+  id: "door_main"
+  component: "/features/props/door_main.script"
+  properties {
+    id: "open_distance"
+    value: "150.0"
+    type: PROPERTY_TYPE_NUMBER
+  }
+  properties {
+    id: "close_distance"
+    value: "200.0"
+    type: PROPERTY_TYPE_NUMBER
+  }
+}
+components {
+  id: "door_open"
+  component: "/assets/sounds/door_sliding_open.sound"
+}
+components {
+  id: "door_closed"
+  component: "/assets/sounds/door_sliding_close.sound"
+}
+embedded_components {
+  id: "collisionobject_player"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"walls\"\n"
+  "mask: \"player\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      x: -59.0\n"
+  "      y: -74.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "  }\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      x: 59.0\n"
+  "      y: -74.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 3\n"
+  "    count: 3\n"
+  "  }\n"
+  "  data: 37.0\n"
+  "  data: 10.0\n"
+  "  data: 10.0\n"
+  "  data: 37.0\n"
+  "  data: 10.0\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}
+embedded_components {
+  id: "collisionobject_npcs"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"walls\"\n"
+  "mask: \"npcs\"\n"
+  "mask: \"enemies\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      x: -59.0\n"
+  "      y: -74.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "  }\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      x: 59.0\n"
+  "      y: -74.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 3\n"
+  "    count: 3\n"
+  "  }\n"
+  "  data: 37.0\n"
+  "  data: 10.0\n"
+  "  data: 10.0\n"
+  "  data: 37.0\n"
+  "  data: 10.0\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}
+embedded_components {
+  id: "sprite_back"
+  type: "sprite"
+  data: "default_animation: \"door_main_back_idle\"\n"
+  "material: \"/builtins/materials/sprite.material\"\n"
+  "size {\n"
+  "  x: 192.0\n"
+  "  y: 192.0\n"
+  "}\n"
+  "textures {\n"
+  "  sampler: \"texture_sampler\"\n"
+  "  texture: \"/features/props/door.atlas\"\n"
+  "}\n"
+  ""
+  position {
+    y: -80.0
+  }
+}
+embedded_components {
+  id: "sprite_front"
+  type: "sprite"
+  data: "default_animation: \"door_main_front_idle\"\n"
+  "material: \"/builtins/materials/sprite.material\"\n"
+  "size {\n"
+  "  x: 192.0\n"
+  "  y: 32.0\n"
+  "}\n"
+  "textures {\n"
+  "  sampler: \"texture_sampler\"\n"
+  "  texture: \"/features/props/door.atlas\"\n"
+  "}\n"
+  ""
+  position {
+    y: 16.0
+    z: 0.2
+  }
+}

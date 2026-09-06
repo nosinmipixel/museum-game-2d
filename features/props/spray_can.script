@@ -1,0 +1,268 @@
+-- features/props/spray_can.script
+-- ═══════════════════════════════════════════════════════
+-- 🎨 BOTE DE SPRAY (spray_can)
+-- ═══════════════════════════════════════════════════════
+--
+--   a) On hover: Tintado del sprite (iluminar) y animación de escalado.
+--   b) On clic:
+--      - Variante SPRAY (default): si spray_current < max_spray, restaura al
+--        100%, reproduce pick_up.sound, notifica al spray_spawn_container y
+--        se autodestruye; si ya está lleno, muestra alerta con hint_insecticide.
+--      - Variante INSECTICIDA (Fase 2, docs/plans/archive/NEST_SYSTEM_PLAN.md): el contenedor
+--        tira config.balance.nest.insecticide_chance y marca is_insecticide en
+--        spray_spawn_state.pending_spawn. Al recoger, otorga UNA carga de
+--        nest_insecticide (tope insecticide_max) en vez de rellenar spray, usa
+--        el sprite pickup_poison_nest y sigue el mismo contrato de recogida
+--        (sonido + notificación + autodestrucción). Al máximo → hint_insecticide_max.
+--
+--   c) 🗄️ Ocultación por armario (Ago 2026, simplificado — ver GOTCHA #31):
+--      los armarios ya NO animan su z (z estable en el editor). El bote
+--      consulta cabinet_state.get_open(pos) en update(): dentro de un armario
+--      CERRADO → sprite y colisiones DESACTIVADAS (ni hover ni clic posibles);
+--      se ACTIVA cuando la animación de apertura finaliza y se desactiva si
+--      cierran la puerta sin recogerlo. Los botes fuera de armarios están
+--      siempre activos. Los botes viven a z 0.22 (por encima del armario 0.20
+--      y de los frentes de puerta 0.21), definido en los spawn points.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-17
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local config = require "main.config"
+local text_loader = require "main.text_loader"
+local spray_state = require "main.spray_spawn_state"
+local cabinet_state = require "main.cabinet_state"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_SPRAY_CAN = false
+local dprint = config.make_log(DEBUG_SPRAY_CAN)
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): set_hover_state y set_active se definen MÁS
+-- ABAJO pero se llaman desde init()/update() (que van antes). Forward
+-- declaration: los callers las capturan como upvalue y las definiciones
+-- posteriores asignan a estos locales (function X, sin 'local').
+local set_hover_state
+local set_active
+
+-- 🌐 Recarga los hints localizados (text_alert). Definida ANTES de init para
+--    que init y el callback de idioma la capturen como upvalue (GOTCHA #1).
+local function load_hints(self)
+	local general_texts = text_loader.load("general") or {}
+	self.hint_insecticide = (general_texts.tutorials and general_texts.tutorials.hint_insecticide)
+		or "You can refill your insecticide can when your charge is not full"
+	-- 🪺 Fase 2 (docs/plans/archive/NEST_SYSTEM_PLAN.md): alerta al recoger un bote de
+	--    insecticida con las cargas ya al máximo (insecticide_max).
+	self.hint_insecticide_max = (general_texts.tutorials and general_texts.tutorials.hint_insecticide_max)
+		or "You are already carrying the maximum amount of insecticide"
+	-- 🪺 Fase 2: hint PERSISTENTE al hacer hover sobre un bote de insecticida
+	--    (patrón show_persistent_alert de muebles/gato, GOTCHA #13: el exit
+	--    debe procesarse siempre o la alerta queda colgada).
+	self.hint_hover_insecticide_poison = (general_texts.tutorials and general_texts.tutorials.hint_hover_insecticide_poison)
+		or "Insecticide can: use it on a nest to destroy it"
+end
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.initial_scale = go.get_scale()
+	self.sprite_url = msg.url(nil, nil, "sprite")
+
+	-- Leer el spawn_index desde el módulo compartido.
+	-- El contenedor escribe pending_spawn ANTES de factory.create()
+	-- y factory.create es síncrono, así que los datos están disponibles.
+	if spray_state.pending_spawn then
+		self.spawn_index = spray_state.pending_spawn.index
+		-- 🪺 Fase 2 (docs/plans/archive/NEST_SYSTEM_PLAN.md): variante insecticida. El contenedor
+		--    tira la probabilidad (config.balance.nest.insecticide_chance) y
+		--    marca el flag aquí; nil/false → spray normal (comportamiento
+		--    original, el GO del editor también cae en este caso).
+		self.is_insecticide = spray_state.pending_spawn.is_insecticide == true
+		spray_state.pending_spawn = nil  -- limpiar para la siguiente creación
+	else
+		self.spawn_index = nil
+		self.is_insecticide = false
+	end
+
+	-- 🪺 Variante insecticida: cambiar al sprite del bote de insecticida
+	--    (pickup_poison_nest, imagen registrada en props.atlas). Se aplica en
+	--    init(), ANTES del primer render → sin parpadeo del sprite de spray.
+	if self.is_insecticide then
+		sprite.play_flipbook(self.sprite_url, hash("pickup_poison_nest"))
+	end
+
+	load_hints(self)
+
+	-- 🗄️ URLs de componentes para activar/desactivar (ocultación por armario):
+	--    desactivado = sprite + colisiones off → sin hover ni clic posibles.
+	self.collision_cursor_url = msg.url(nil, nil, "collisionobject_cursor")
+	self.collision_player_url = msg.url(nil, nil, "collisionobject_player")
+
+	-- 🗄️ Estado de hover (para limpiarlo si el armario se cierra encima)
+	self.is_hovered = false
+
+	-- 🗄️ Estado de visibilidad inicial: los armarios ya se registraron en su
+	--    init() (colección cargada antes que cualquier factory.create), así que
+	--    se puede calcular aquí — un bote que nace dentro de un armario
+	--    CERRADO arranca DESACTIVADO (sprite + colisiones apagadas desde el
+	--    primer frame, sin parpadeo; update() corre en el frame siguiente a
+	--    factory.create). Ojo: no basta con marcar el flag — hay que APLICAR
+	--    la desactivación (set_active), o el bote nacería visible hasta que
+	--    una animación provocara la primera transición. Los botes FUERA de
+	--    armarios (get_open = nil) nacen activos y siempre visibles: los
+	--    spawns de spray exteriores funcionan igual que antes.
+	set_active(self, cabinet_state.get_open(go.get_position()) ~= false)
+
+	-- 🌐 Recargar hints si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_hints(self)
+		dprint("[spray_can] Hints recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+end
+
+function update(self, dt)
+	-- 🗄️ Ocultación por armario (Ago 2026, simplificado): el armario ya no
+	--    anima z (z estable en el editor); el bote se activa/desactiva según
+	--    el estado de SU armario — activación cuando la animación de apertura
+	--    finaliza (cabinet_state.set_open en el callback del flipbook) y
+	--    desactivación al cerrar la puerta sin recogerlo. Desactivado = sprite
+	--    + colisiones deshabilitadas → sin hover ni clic posibles. Los botes
+	--    fuera de armarios (get_open = nil) están siempre activos.
+	local should_active = cabinet_state.get_open(go.get_position()) ~= false
+	if should_active ~= self.active then
+		set_active(self, should_active)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER: ANIMACIÓN DE ESCALA Y TINT
+-- ═══════════════════════════════════════════════════════
+-- 📏 Ago 2026: el gate de distancia se unificó en los HUBS (cursor.script /
+-- mobile_interact.script, interaction_range global de main/config.lua) —
+-- el hover y el clic aquí solo llegan con el jugador dentro del rango.
+
+-- 🗄️ Aplica el estado de visibilidad del bote (sprite + colisiones on/off).
+--    Desactivado = sin hover ni clic posibles (la física 2D ya ni lo detecta).
+--    Al desactivar se limpia el hover pendiente (GOTCHA #13): si el armario se
+--    cerró con el cursor encima no llega mouse_hover exit — resetear estado y
+--    ocultar la alerta persistente (solo si ES esta variante la que la mostró).
+function set_active(self, active)
+	self.active = active
+	if active then
+		msg.post(self.sprite_url, "enable")
+		msg.post(self.collision_cursor_url, "enable")
+		msg.post(self.collision_player_url, "enable")
+	else
+		if self.is_hovered then
+			set_hover_state(self, false)
+			if self.is_insecticide then
+				msg.post("/gui#hud", "hide_persistent_alert")
+			end
+		end
+		msg.post(self.sprite_url, "disable")
+		msg.post(self.collision_cursor_url, "disable")
+		msg.post(self.collision_player_url, "disable")
+	end
+end
+
+function set_hover_state(self, is_hovered)
+	self.is_hovered = is_hovered
+	if is_hovered then
+		go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, self.initial_scale * 1.2, go.EASING_OUTCUBIC, 0.12)
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.3, 1.3, 1.2, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	else
+		go.animate(".", "scale", go.PLAYBACK_ONCE_FORWARD, self.initial_scale, go.EASING_OUTCUBIC, 0.12)
+		if go.exists(self.sprite_url) then
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.12)
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- 🗄️ Bote oculto tras un armario CERRADO (sprite + colisiones desactivadas):
+	--    no puede recibir hover ni clic — los eventos no llegan porque la
+	--    colisión está deshabilitada. Guardia defensiva por si llegara un
+	--    mensaje residual (p. ej. exit de física al desactivar).
+	if not self.active then return end
+
+	if message_id == hash("mouse_hover") then
+		-- 📏 El rango ya lo aplican los hubs (interaction_range) — el hover
+		-- solo llega con el jugador cerca.
+		set_hover_state(self, message.enter)
+		-- 🪺 Fase 2: hint persistente al hacer hover sobre un bote de
+		--    insecticida (el veneno no rellena spray → se explica su uso).
+		if self.is_insecticide then
+			if message.enter then
+				msg.post("/gui#hud", "show_persistent_alert", { text = self.hint_hover_insecticide_poison })
+			else
+				msg.post("/gui#hud", "hide_persistent_alert")
+			end
+		end
+
+	elseif message_id == hash("interact") then
+		-- 📏 El rango ya lo aplican los hubs (interaction_range).
+
+		-- 🪺 Fase 2 (docs/plans/archive/NEST_SYSTEM_PLAN.md): variante insecticida — otorga UNA
+		--    carga de nest_insecticide (tope configurable insecticide_max) en
+		--    vez de rellenar el spray. Mismo contrato de recogida: sonido
+		--    pick_up + notificación al contenedor + autodestrucción.
+		if self.is_insecticide then
+			local nest_cfg = (config.balance and config.balance.nest) or {}
+			local insecticide_max = nest_cfg.insecticide_max or 2
+			local current = tonumber(game_state.get_global("nest_insecticide") or 0)
+
+			if current < insecticide_max then
+				game_state.add_to_global("nest_insecticide", 1)
+				sound.play("#pick_up")
+				dprint("[spray_can] Insecticida recogido (carga " .. (current + 1) .. "/" .. insecticide_max .. ")")
+
+				if spray_state.container_url then
+					msg.post(spray_state.container_url, "spray_picked_up", {
+						spawn_index = self.spawn_index
+					})
+				end
+				go.delete()
+			else
+				-- Cargas al máximo: alerta localizada
+				msg.post("/gui#hud", "show_alert", {
+					text = self.hint_insecticide_max
+				})
+				dprint("[spray_can] Insecticida al máximo (" .. insecticide_max .. "): mostrando hint")
+			end
+			return
+		end
+
+		local max_spray = tonumber(game_state.get_global("max_spray") or 100)
+		local spray_current = tonumber(game_state.get_global("spray_current") or 0)
+
+		if spray_current < max_spray then
+			-- Restaurar spray al máximo
+			game_state.set_global("spray_current", max_spray)
+			sound.play("#pick_up")
+			dprint("[spray_can] Spray restaurado al 100% (spawn #" .. tostring(self.spawn_index) .. ")")
+
+			-- Notificar al contenedor usando el módulo compartido
+			if spray_state.container_url then
+				msg.post(spray_state.container_url, "spray_picked_up", {
+					spawn_index = self.spawn_index
+				})
+			end
+
+			-- Autodestruirse
+			go.delete()
+		else
+			-- Spray ya al máximo: mostrar hint
+			msg.post("/gui#hud", "show_alert", {
+				text = self.hint_insecticide
+			})
+			dprint("[spray_can] Spray al máximo: mostrando hint")
+		end
+	end
+end

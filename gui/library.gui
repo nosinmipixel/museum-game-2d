@@ -1,0 +1,198 @@
+script: "/gui/library.gui_script"
+fonts {
+  name: "dialogs"
+  font: "/assets/fonts/dialogs.font"
+}
+textures {
+  name: "gui"
+  texture: "/gui/gui.atlas"
+}
+nodes {
+  position {
+    x: 640.0
+    y: 390.0
+  }
+  scale {
+    x: 0.5
+    y: 0.5
+  }
+  size {
+    x: 2560.0
+    y: 1560.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_BOX
+  id: "box_background"
+  adjust_mode: ADJUST_MODE_ZOOM
+  layer: "background"
+  inherit_alpha: true
+  alpha: 0.85
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 652.0
+    y: 328.0
+  }
+  scale {
+    x: 3.0
+    y: 3.0
+  }
+  type: TYPE_BOX
+  texture: "gui/book_idle"
+  id: "box_book"
+  layer: "book"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+nodes {
+  position {
+    x: 378.0
+    y: 549.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 950.0
+    y: 1800.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_page_left"
+  pivot: PIVOT_NW
+  line_break: true
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 689.0
+    y: 549.0
+  }
+  scale {
+    x: 0.2
+    y: 0.2
+  }
+  size {
+    x: 950.0
+    y: 1800.0
+  }
+  color {
+    x: 0.0
+    y: 0.0
+    z: 0.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_page_right"
+  pivot: PIVOT_NW
+  line_break: true
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 646.0
+    y: 635.0
+  }
+  scale {
+    x: 0.25
+    y: 0.25
+  }
+  size {
+    x: 2000.0
+    y: 200.0
+  }
+  type: TYPE_TEXT
+  text: "<text>"
+  font: "dialogs"
+  id: "text_title"
+  line_break: true
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 244.0
+    y: 324.0
+  }
+  size {
+    x: 32.0
+    y: 32.0
+  }
+  type: TYPE_BOX
+  texture: "gui/btn_backward_idle"
+  id: "box_backward"
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1058.0
+    y: 324.0
+  }
+  size {
+    x: 32.0
+    y: 32.0
+  }
+  type: TYPE_BOX
+  texture: "gui/btn_forward_idle"
+  id: "box_forward"
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 1063.0
+    y: 558.0
+  }
+  size {
+    x: 32.0
+    y: 32.0
+  }
+  type: TYPE_BOX
+  texture: "gui/btn_close_idle"
+  id: "box_close"
+  layer: "top"
+  inherit_alpha: true
+}
+nodes {
+  position {
+    x: 652.0
+    y: 328.0
+  }
+  scale {
+    x: 3.0
+    y: 3.0
+  }
+  type: TYPE_BOX
+  texture: "gui/book_page_forward"
+  id: "box_pages_flip"
+  layer: "top"
+  inherit_alpha: true
+  size_mode: SIZE_MODE_AUTO
+}
+layers {
+  name: "background"
+}
+layers {
+  name: "book"
+}
+layers {
+  name: "top"
+}
+material: "/builtins/materials/gui.material"
+adjust_reference: ADJUST_REFERENCE_PARENT

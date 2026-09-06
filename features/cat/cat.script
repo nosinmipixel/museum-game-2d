@@ -1,0 +1,1653 @@
+-- features/cat/cat.script
+-- ═══════════════════════════════════════════════════════
+-- 🐱 CEREBRO DEL GATO DEL MUSEO
+-- ═══════════════════════════════════════════════════════
+--
+--   Máquina de estados completa:
+--     INACTIVE → PATROL → INTERACT → CHASE → ATTACK
+--                   ↑                      ↓
+--               (vuelta) ← ← ← ← ← ← ← ←
+--
+--     INTERACT + (clic + comida) → PET → RETURN_PATROL → PATROL
+--
+--   Requisitos:
+--     - Usa features/npc/npc_patrol.lua para movimiento autónomo
+--     - Usa features/cat/cat_nav.lua para navegación con esquive
+--     - Detecta enemigos mediante raycast (línea de visión)
+--     - Ataca enemigos enviando take_damage
+--     - Modo mascota con timer y seguimiento al jugador
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require "main.game_state"
+local food_state = require "main.food_spawn_state"
+local enemy_state = require "main.enemy_state"
+local text_loader = require "main.text_loader"
+local patrol = require "features.npc.npc_patrol"
+local nav = require "features.cat.cat_nav"
+local npc_spawn_state = require "main.npc_spawn_state"
+
+-- 🔧 DEBUG [GATO]: cambiar a true para activar los logs del gato.
+--    Respeta el kill-switch global M.DEBUG (main/config.lua).
+local DEBUG_CAT = false
+local dprint = require("main.config").make_log(DEBUG_CAT)
+
+-- ⏱️ Pie timer del modo mascota en el HUD (box_pet_container: pie_timer_pet +
+--    box_icon_pet). Mensajes al HUD con el MISMO modelo que el timer de
+--    exhibición (pie_timer_to_exhibition): pre-hasheados porque update_pet
+--    corre cada frame (regla #3 de DEFOLD_LUA_STANDARDS).
+local MSG_UPDATE_PET_TIMER = hash("update_pet_timer")
+local MSG_HIDE_PET_TIMER = hash("hide_pet_timer")
+local PET_HUD_UPDATE_INTERVAL = 0.1   -- 10Hz, mismo patrón que el timer de exhibición
+
+-- 📐 Semiejes REALES de la caja de colisión del gato contra las paredes
+--    (collisionobject_walls en cat.go: caja 25×25 → semieje 12.5). Se pasan
+--    a patrol.init para que la sonda de espacio libre de npc_patrol.lua mida
+--    el hueco con el cuerpo del GATO, no con el de los NPCs (11×15 → 5.5/7.5):
+--    sin esto, la sonda medía huecos optimistas (±7.5) que el cuerpo real
+--    (±12.5) no atravesaba. Ver GOTCHA #42.
+local CAT_BODY_HALF = 12.5
+
+-- ═══════════════════════════════════════════════════════
+-- ⚙️ PROPIEDADES CONFIGURABLES (desde editor)
+-- ═══════════════════════════════════════════════════════
+
+go.property("patrol_enabled", true)
+go.property("patrol_speed", 40)
+go.property("patrol_radius", 200)
+go.property("activate_radius", 300)     -- Radio para activar al gato
+go.property("attack_damage", 15)        -- Daño por ataque
+go.property("attack_cooldown", 0.8)     -- Segundos entre ataques
+go.property("attack_range", 20)         -- Distancia para atacar
+go.property("pet_duration", 180)        -- Segundos en modo mascota
+go.property("pet_follow_dist", 60)      -- Distancia ideal al jugador en PET
+go.property("pet_max_dist", 120)        -- Distancia máxima antes de volver
+go.property("pet_speed", 150)           -- Velocidad de seguimiento en PET (igual que el jugador: 150 px/s)
+go.property("sit_idle_time", 2.0)       -- Segundos que el jugador debe estar quieto para que el gato se siente (modo PET)
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 ESTADOS
+-- ═══════════════════════════════════════════════════════
+
+local STATE = {
+	INACTIVE      = "INACTIVE",
+	PATROL        = "PATROL",
+	INTERACT      = "INTERACT",
+	CHASE         = "CHASE",
+	ATTACK        = "ATTACK",
+	PET           = "PET",
+	RETURN_PATROL = "RETURN_PATROL",
+}
+
+-- ⚠️ GOTCHA #1 (docs/DEV_GOTCHAS.md): estas funciones están definidas MÁS ABAJO en
+-- el archivo pero son llamadas desde init (set_visible, play_anim), update
+-- (update_* de cada estado) y entre sí (update_patrol → check_visible_enemy,
+-- update_chase → has_line_of_sight, etc.). Forward declaration: los callers
+-- las capturan como upvalues y las definiciones posteriores asignan a estos
+-- locales (patrón establecido en Fases 1/2).
+local update_inactive
+local update_patrol
+local update_interact
+local update_chase
+local update_attack
+local update_pet
+local update_return_patrol
+local check_visible_enemy
+local find_visible_enemy_near
+local has_line_of_sight
+local play_anim
+local sync_patrol_anim
+local set_visible
+local highlight_sprite
+
+-- 🌐 Recarga los hints localizados (text_alert). Definida ANTES de init para
+--    que init y el callback de idioma la capturen como upvalue (GOTCHA #1).
+local function load_hints(self)
+	local general_texts = text_loader.load("general") or {}
+	self.hint_cat_hover = (general_texts.tutorials and general_texts.tutorials.hint_cat_hover)
+		or "¡Miau! Si tienes algo rico para mí, puedo ser tu amigo."
+	self.hint_cat_pet_start = (general_texts.tutorials and general_texts.tutorials.hint_cat_pet_start)
+		or "Has sido muy amable ¡Miau!\nCreo que te acompañaré durante un rato ¡Miau!"
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 INICIALIZACIÓN
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	self.state = STATE.INACTIVE
+	self.spawn_pos = go.get_position()
+
+	-- 🎯 Registrar la URL REAL del gato para el spawn manager
+	--    (GOTCHA #4: go.get_id() devuelve la ruta completa; el gato no
+	--     tiene bloqueo: siempre se coloca en spawn_npc_cat)
+	npc_spawn_state.register_npc("cat", go.get_id())
+
+	-- 🐾 Clear defensivo del flag PET: npc_spawn_state es un módulo cuyo
+	--    estado sobrevive a recargas de colección en la misma sesión. Si el
+	--    nivel se recarga/descarga con el gato a mitad de PET (p. ej. salir a
+	--    la intro y volver), el flag quedaría true y el gato re-spawneado
+	--    sería excluido de la interacción sin motivo. No-op si ya está false.
+	npc_spawn_state.set_cat_pet_active(false)
+
+	self.sprite_url = msg.url(nil, nil, "sprite")
+	self.player_url = msg.url("/player")
+
+	-- 🔗 URL del HUD cacheada (regla #4)
+	self.hud_url = msg.url("/gui#hud")
+
+	-- Detección de enemigos (trigger + enumeración)
+	self.nearby_enemies = {}     -- tabla { [tostring(url)] = url } refrescada por trigger
+	self.enemy_refresh = 0       -- timer para refrescar búsqueda
+
+	-- Patrulla
+	if self.patrol_enabled then
+		patrol.init(self, self.spawn_pos, CAT_BODY_HALF, CAT_BODY_HALF)
+		self.patrol_speed = self.patrol_speed or 30
+		self.patrol_radius = self.patrol_radius or 200
+	end
+
+	-- Navegación
+	nav.init(self)
+	self.nav_dir_x = 0
+	self.nav_dir_y = 0
+
+	-- Combate
+	self.attack_timer = 0
+	self.current_enemy = nil
+
+	-- Pet mode
+	self.pet_timer = 0
+	self.pet_hud_timer = 0   -- acumulador 10Hz para el pie timer del HUD
+
+	-- 🐾 Estela del jugador (ring buffer) para el seguimiento en PET
+	self.trail = {}
+	self.trail_head = 0      -- índice de la entrada más reciente
+	self.trail_count = 0     -- entradas válidas en el buffer
+	self.pet_rejoining = false -- true mientras se reincorpora a la estela tras combatir
+
+	-- Atasco en el avance directo por la estela (empujando un muro)
+	self.pet_stuck = false
+	self.pet_stuck_timer = 0
+	self.pet_progress_timer = 0
+	self.pet_progress_last_pos = nil
+
+	-- 🐾 Cursor monótono del gato sobre la estela (offset desde el jugador) +
+	--    latch de movimiento. El cursor sustituye al "waypoint más cercano"
+	--    para elegir el paso (ver get_follow_step).
+	self.pet_trail_off = nil
+	self.pet_moving = false
+
+	-- 🚪 Espera en puerta cerrada (PET): estado mientras la estela está bloqueada
+	--    por una puerta interactiva que el jugador cerró detrás de sí. El gato se
+	--    sienta, maúlla de vez en cuando y reanuda al abrirla (ver update_pet).
+	self.pet_door_wait = false         -- esperando a que abran la puerta
+	self.pet_door_probe_timer = 0      -- cuenta atrás para el avance de prueba
+	self.pet_door_trial_pending = false -- hay un avance de prueba sin confirmar
+	self.pet_door_target = nil          -- punto hacia el que probar (waypoint COPIADO)
+	self.pet_door_meow_timer = 0        -- cuenta atrás para el maullido de aviso
+	-- Contactos con paredes del último paso de física (se refrescan en on_message
+	--    cada frame; usados SOLO por la espera en puerta del modo PET):
+	self.walls_contacted = false        -- hubo contacto con grupo "walls"
+	self.wall_contact_is_door = false   -- el último contacto con pared fue una puerta
+
+	-- Detección de jugador quieto (para idle_sitting en modo PET)
+	self.player_idle_timer = 0
+	self.last_player_pos = nil
+
+	-- Animación
+	self.current_anim = nil
+	self.grooming_timer = 0
+
+	-- Ronroneo en bucle (idle_sitting en modo PET)
+	self.purr_timer = 0
+	self.purr_playing = false
+
+	-- 🧱 Corrección de colisión con paredes (mismo sistema que npc_patrol.lua)
+	--    Acumula empujes de contact_point_response y los aplica al inicio
+	--    del siguiente update() para evitar jitter.
+	self.wall_push_pos = vmath.vector3()
+	self.wall_push_neg = vmath.vector3()
+
+	-- 🐱 Textos localizados del gato (hints de text_alert)
+	load_hints(self)
+
+	-- 🌐 Recargar hints si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_hints(self)
+		dprint("[Cat] Hints recargados por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	-- Ocultar inicialmente
+	set_visible(self, false)
+
+	-- Reproducir animación idle por defecto
+	play_anim(self, "idle")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔄 UPDATE
+-- ═══════════════════════════════════════════════════════
+
+function update(self, dt)
+	-- Reducir cooldowns
+	if self.attack_timer > 0 then
+		self.attack_timer = self.attack_timer - dt
+	end
+	if self.grooming_timer > 0 then
+		self.grooming_timer = self.grooming_timer - dt
+	end
+
+	-- Obtener posición del jugador
+	local player_exists, player_pos = pcall(go.get_position, self.player_url)
+	if not player_exists then
+		return
+	end
+
+	local my_pos = go.get_position()
+
+	-- 🧱 Aplicar corrección acumulada de paredes ANTES de mover
+	--    (mismo patrón que npc_patrol.lua: acumular en on_message,
+	--     aplicar una sola vez aquí para evitar jitter).
+	--    Zero-garbage: suma por componentes en my_pos (copia fresca de
+	--    go.get_position()) y resets por componentes (antes: correction =
+	--    pos+neg + 2× vmath.vector3() alocaban cada frame incondicionalmente).
+	local has_correction = vmath.length_sqr(self.wall_push_pos) > 0
+		or vmath.length_sqr(self.wall_push_neg) > 0
+	if has_correction then
+		my_pos.x = my_pos.x + self.wall_push_pos.x + self.wall_push_neg.x
+		my_pos.y = my_pos.y + self.wall_push_pos.y + self.wall_push_neg.y
+		my_pos.z = my_pos.z + self.wall_push_pos.z + self.wall_push_neg.z
+		go.set_position(my_pos)
+	end
+	self.wall_push_pos.x = 0
+	self.wall_push_pos.y = 0
+	self.wall_push_pos.z = 0
+	self.wall_push_neg.x = 0
+	self.wall_push_neg.y = 0
+	self.wall_push_neg.z = 0
+
+	local dist_to_player = vmath.length(player_pos - my_pos)
+
+	-- === MÁQUINA DE ESTADOS ===
+
+	if self.state == STATE.INACTIVE then
+		update_inactive(self, dist_to_player)
+
+	elseif self.state == STATE.PATROL then
+		update_patrol(self, dt, player_pos, my_pos, dist_to_player)
+
+	elseif self.state == STATE.INTERACT then
+		update_interact(self, dt, player_pos, my_pos, dist_to_player)
+
+	elseif self.state == STATE.CHASE then
+		update_chase(self, dt)
+
+	elseif self.state == STATE.ATTACK then
+		update_attack(self, dt)
+
+	elseif self.state == STATE.PET then
+		update_pet(self, dt, player_pos, my_pos, dist_to_player)
+
+	elseif self.state == STATE.RETURN_PATROL then
+		update_return_patrol(self, dt)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧊 INACTIVE
+-- ═══════════════════════════════════════════════════════
+
+function update_inactive(self, dist_to_player)
+	if dist_to_player < self.activate_radius then
+		set_visible(self, true)
+		self.state = STATE.PATROL
+		dprint("[GATO] Activado → PATROL")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚶 PATROL (usa npc_patrol.lua)
+-- ═══════════════════════════════════════════════════════
+
+function update_patrol(self, dt, player_pos, my_pos, dist_to_player)
+	-- Comprobar enemigos visibles (prioridad máxima)
+	if check_visible_enemy(self) then
+		self.state = STATE.CHASE
+		nav.reset(self)
+		dprint("[GATO] Enemigo detectado → CHASE")
+		return
+	end
+
+	-- Si el jugador se aleja demasiado, volver a inactivo
+	if dist_to_player > self.activate_radius * 1.5 then
+		set_visible(self, false)
+		self.state = STATE.INACTIVE
+		dprint("[GATO] Jugador fuera de rango → INACTIVE")
+		return
+	end
+
+	-- Actualizar patrulla (npc_patrol.lua maneja movimiento + colisión paredes)
+	patrol.update(self, dt, player_pos, my_pos)
+
+	-- Sincronizar animación con dirección de patrulla
+	sync_patrol_anim(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧍 INTERACT (jugador cerca, esperando interacción)
+-- ═══════════════════════════════════════════════════════
+
+function update_interact(self, dt, player_pos, my_pos, dist_to_player)
+	-- Comprobar enemigos visibles (prioridad)
+	if check_visible_enemy(self) then
+		self.state = STATE.CHASE
+		nav.reset(self)
+		dprint("[GATO] Enemigo durante INTERACT → CHASE")
+		return
+	end
+
+	-- Si el jugador se aleja, volver a patrulla
+	if dist_to_player > 100 then
+		self.state = STATE.PATROL
+		dprint("[GATO] Jugador se alejó → PATROL")
+		return
+	end
+
+	-- Animación idle, ocasionalmente grooming
+	if self.grooming_timer <= 0 and math.random() < 0.005 then
+		self.grooming_timer = math.random(2, 4)
+	end
+
+	play_anim(self, "idle")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🏃 CHASE (perseguir enemigo)
+-- ═══════════════════════════════════════════════════════
+
+-- Helpers direccionales (deben ser locales y definirse ANTES de las funciones
+-- que los usan; en Defold las funciones globales no capturan locales posteriores)
+
+-- Umbral de velocidad para animación de carrera: por encima de patrol_speed → run.
+-- Elige la animación en 4 direcciones (left/right/top/down) según el eje dominante
+-- de nav_dir_x/nav_dir_y (misma convención que npc.script: dy > 0 → _top).
+local function walk_anim(self, speed)
+	local is_run = speed and speed > self.patrol_speed
+	local prefix = is_run and "run" or "walk"
+	local dx = self.nav_dir_x or 0
+	local dy = self.nav_dir_y or 0
+	if math.abs(dx) >= math.abs(dy) then
+		return (dx >= 0) and (prefix .. "_right") or (prefix .. "_left")
+	else
+		return (dy >= 0) and (prefix .. "_top") or (prefix .. "_down")
+	end
+end
+
+local function attack_anim(self, target_pos)
+	if not target_pos then
+		return "attack_right"
+	end
+	local my_pos = go.get_position()
+	local dx = target_pos.x - my_pos.x
+	return (dx >= 0) and "attack_right" or "attack_left"
+end
+
+function update_chase(self, dt)
+	if not self.current_enemy or not go.exists(self.current_enemy) then
+		self.current_enemy = nil
+		self.state = STATE.PATROL
+		dprint("[GATO] Enemigo perdido → PATROL")
+		return
+	end
+
+	-- Verificar línea de visión
+	if not has_line_of_sight(self, self.current_enemy) then
+		self.current_enemy = nil
+		self.state = STATE.PATROL
+		dprint("[GATO] Enemigo fuera de línea visión → PATROL")
+		return
+	end
+
+	local enemy_pos = go.get_position(self.current_enemy)
+	local my_pos = go.get_position()
+	local dist_to_enemy = vmath.length(enemy_pos - my_pos)
+
+	-- Si está cerca, atacar
+	if dist_to_enemy < self.attack_range then
+		self.state = STATE.ATTACK
+		dprint("[GATO] Distancia de ataque → ATTACK")
+		return
+	end
+
+	-- Navegar hacia el enemigo
+	nav.move_towards(self, enemy_pos, self.patrol_speed * 2, dt)
+
+	-- Animación según dirección snap (corriendo: speed > patrol_speed)
+	play_anim(self, walk_anim(self, self.patrol_speed * 2))
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⚔️ ATTACK (atacar enemigo)
+-- ═══════════════════════════════════════════════════════
+
+function update_attack(self, dt)
+	if not self.current_enemy or not go.exists(self.current_enemy) then
+		self.current_enemy = nil
+		self.state = STATE.PATROL
+		dprint("[GATO] Enemigo muerto → PATROL")
+		return
+	end
+
+	-- Verificar línea de visión
+	if not has_line_of_sight(self, self.current_enemy) then
+		self.current_enemy = nil
+		self.state = STATE.CHASE  -- Volver a perseguir
+		nav.reset(self)
+		dprint("[GATO] Enemigo no visible → CHASE")
+		return
+	end
+
+	-- Rotar hacia el enemigo (no usamos go.set_rotation: los sprites
+	-- attack_left/attack_right ya están pre-flipeados)
+	local enemy_pos = go.get_position(self.current_enemy)
+	local my_pos = go.get_position()
+	-- No rotar: attack_anim() ya selecciona la dirección correcta
+
+	-- Atacar si cooldown listo
+	if self.attack_timer <= 0 then
+		self.attack_timer = self.attack_cooldown
+
+		-- Reproducir animación de ataque (direccional)
+		play_anim(self, attack_anim(self, enemy_pos))
+
+		-- Sonido de ataque
+		sound.play("#cat_attack")
+
+		-- Aplicar daño al enemigo
+		msg.post(self.current_enemy, "take_damage", { amount = self.attack_damage })
+		dprint("[GATO] Ataque: daño " .. self.attack_damage .. " a " .. tostring(self.current_enemy))
+	end
+
+	-- Si el enemigo se aleja demasiado, volver a perseguir
+	local dist_to_enemy = vmath.length(enemy_pos - my_pos)
+	if dist_to_enemy > self.attack_range * 2 then
+		self.state = STATE.CHASE
+		nav.reset(self)
+		dprint("[GATO] Enemigo se alejó → CHASE")
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🐾 PET (modo mascota: sigue al jugador, ataca enemigos)
+-- ═══════════════════════════════════════════════════════
+
+-- Ronroneo: el ogg dura ~5s; relanzarlo cada 4.5s lo mantiene casi continuo
+-- mientras el gato está sentado (idle_sitting), sin cambiar el .sound one-shot.
+local PURR_LOOP_INTERVAL = 4.5
+
+-- 🐾 Estela del jugador en modo PET: ring buffer con las posiciones recientes
+--    del jugador (dedup ≥ 2 px). El gato navega hacia el punto de la estela
+--    a pet_follow_dist a lo largo del camino recorrido (estilo Fear & Hunger)
+--    en lugar de perseguir su posición actual → sin oscilación.
+--    5 s de estela a 60 fps ≈ 300 entradas.
+local PET_TRAIL_SIZE = 300
+
+-- Distancia del seguimiento por estela:
+--   • PET_REJOIN_DIST: si el gato está más lejos de la estela (p. ej. tras
+--     combatir), va directo al punto objetivo en vez de avanzar waypoint a waypoint
+-- NOTA: NO hay umbral de "llegado" por distancia: get_follow_step devuelve nil
+-- cuando el gato alcanza su punto objetivo (C ≤ T). Los waypoints consecutivos
+-- están a solo ~2 px (dedup ≥ 2 px), así que un umbral aquí bloquearía el avance.
+local PET_REJOIN_DIST = 40
+-- Cuadrado precalculado (regla DEFOLD_LUA_STANDARDS §1: nunca R*R por frame;
+-- precedente MOVE_HIDE_THRESHOLD_SQR) — se compara en cada frame en PET
+local PET_REJOIN_DIST_SQR = PET_REJOIN_DIST * PET_REJOIN_DIST
+
+-- Detección de atasco en el avance directo por la estela (empujando un muro):
+--   • PET_PROGRESS_INTERVAL: ventana de medición del desplazamiento REAL del
+--     gato (0.15 s). Ignora el jitter de ~±2.5 px del wall_push (un gato
+--     empujando una pared vibra en el sitio con desplazamiento neto ~0).
+--   • PET_PROGRESS_MIN: px mínimos de desplazamiento por ventana para
+--     considerar que avanza (a pet_speed=150 mueve ~22 px por ventana; un
+--     gato atascado se queda en ~0).
+--   • PET_STUCK_TIMEOUT: tiempo sin progreso antes de forzar la
+--     reincorporación con nav.move_towards (esquive de paredes N1-N4).
+--     El avance directo no tiene recuperación de atasco: si la estela queda
+--     al otro lado de un muro a < PET_REJOIN_DIST (p. ej. pasillo contiguo),
+--     el rejoin por distancia nunca se activa → el gato se quedaba vibrando
+--     contra la pared para siempre.
+local PET_PROGRESS_INTERVAL = 0.15
+local PET_PROGRESS_MIN = 6
+local PET_STUCK_TIMEOUT = 0.6
+
+-- 🚪 Espera en puerta cerrada (PET, Ago 2026): si la estela cruza una puerta
+--    interactiva que el jugador cerró detrás de sí, el gato NO intenta rodearla
+--    (imposible: está empotrada en la pared) sino que espera sentado junto a ella
+--    y reanuda el seguimiento al abrirla. Para saber cuándo la abrieron, hace
+--    AVANCES DE PRUEBA periódicos hacia el punto bloqueado: si el avance deja de
+--    recibir contacto con la puerta (collisionobject_npcs desactivado por
+--    doors.script), la puerta está abierta → reanuda. Sin raycasts: la señal es
+--    el propio contact_point_response (fiable, sin depender de máscaras).
+local PET_DOOR_PROBE_INTERVAL = 0.4    -- segundos entre avances de prueba
+local PET_DOOR_TRIAL_STEP = 8          -- px del avance de prueba (menos que el grosor de la hoja)
+local PET_DOOR_MEOW_INTERVAL = 5.0     -- segundos entre maullidos mientras espera
+
+-- Histéresis del movimiento en el seguimiento por estela: el gato arranca solo
+-- si queda > PET_RESUME_MARGIN waypoints (~5 px) por detrás de su punto objetivo
+-- (T) y, una vez en marcha, no se detiene hasta alcanzarlo. Evita el parpadeo
+-- walk/idle en el borde del slot, que se vuelve crítico cuando el jugador vuelve
+-- sobre sus pasos y la estela se pliega sobre sí misma.
+local PET_RESUME_MARGIN = 2
+
+-- Factor de robo de target en PET: un enemigo distinto solo reemplaza al
+-- objetivo actual (self.current_enemy) si está a < 70 % de la distancia de
+-- este (histéresis). Sin él, con varios enemigos a distancias similares el
+-- "más cercano" cambiaba de frame a frame → indefinición de target: el gato
+-- giraba/bailaba entre ellos y la animación de ataque se volteaba.
+local PET_TARGET_SWITCH_FACTOR = 0.7
+
+-- 🚪 ¿El GO indicado es una puerta interactiva (door_front / door_side /
+--    door_service / copias numeradas)? El nombre del GO contiene "door_".
+--    (door_main NO bloquea el hueco: su colisión solo cubre el marco, así que
+--    la estela del jugador nunca puede quedar bloqueada por ella.)
+local function is_door_object(other_id)
+	return other_id ~= nil and tostring(other_id):find("door_") ~= nil
+end
+
+-- Detiene el ronroneo si estaba sonando y resetea su timer de relanzado
+local function stop_purr(self)
+	self.purr_timer = 0
+	if self.purr_playing then
+		sound.stop("#cat_purr")
+		self.purr_playing = false
+	end
+end
+
+-- 🐾 Limpieza común al SALIR del modo PET: detiene el ronroneo, vacía la
+--    estela/cursor de seguimiento, el estado de atasco/progreso y re-activa
+--    la colisión física con el jugador (desactivada durante PET).
+--    Compartida por update_pet (timer expirado) y reset_cat (muerte del
+--    jugador) — evita que la limpieza duplicada se descuadre entre sí.
+local function exit_pet(self)
+	stop_purr(self)
+	-- 🐾 Desmarcar PET: el gato vuelve a ser candidato de interacción normal
+	--    (timer expirado o reset por muerte — exit_pet es el único punto de
+	--    salida compartido, así que el flag nunca queda colgado).
+	npc_spawn_state.set_cat_pet_active(false)
+	self.trail_head = 0
+	self.trail_count = 0
+	self.pet_trail_off = nil
+	self.pet_moving = false
+	self.pet_rejoining = false
+	self.pet_stuck = false
+	self.pet_stuck_timer = 0
+	self.pet_progress_timer = 0
+	self.pet_progress_last_pos = nil
+	-- 🚪 Limpiar la espera en puerta cerrada (si el timer expiró o reset por muerte)
+	self.pet_door_wait = false
+	self.pet_door_trial_pending = false
+	self.pet_door_target = nil
+	self.walls_contacted = false
+	self.wall_contact_is_door = false
+	-- 🔄 Reactivar la colisión física con el jugador
+	msg.post("#collisionobject_player", "enable")
+
+	-- ⏱️ Ocultar el pie timer del HUD (fin del modo mascota: timer expirado o
+	--    reset por muerte del jugador — exit_pet es el único punto de salida)
+	msg.post(self.hud_url, MSG_HIDE_PET_TIMER)
+end
+
+-- Índice de la entrada a offset pasos hacia atrás desde la más reciente
+-- (helper a nivel de módulo: evita crear un closure cada frame en PET,
+--  DEFOLD_LUA_STANDARDS §1).
+local function trail_idx(head, offset)
+	return (head - offset - 1 + PET_TRAIL_SIZE) % PET_TRAIL_SIZE + 1
+end
+
+-- 👁️ ¿El trayecto directo entre dos posiciones está despejado de paredes?
+--    Usada en la línea de visión (has_line_of_sight: CHASE/ATTACK/PET) y en el
+--    rejoin post-combate: si el atajo directo al punto de seguimiento T está
+--    libre, el gato lo toma en vez de deshacer la estela; si hay pared, se usa
+--    el camino transitable por la estela.
+-- 🚨 GOTCHA #43/#44 (Ago 2026): DOS bugs independientes hacían que
+--    has_line_of_sight devolviera SIEMPRE true (el gato veía/atacaba enemigos
+--    a través de los muros):
+--    1. (#43) la máscara era { hash("collision_object") } — grupo inexistente
+--       (los muros son "walls") → el raycast no golpeaba nada.
+--    2. (#44) faltaba el 4º argumento { all = true }: sin él, el raycast
+--       síncrono devuelve los CAMPOS del hit a nivel superior de la tabla (NO
+--       una lista) → ipairs(result) no itera NADA → LOS true aunque hubiera
+--       pared. La máscara correcta era necesaria pero no suficiente.
+local RAYCAST_WALLS = { hash("walls") }
+local function has_clear_path(from_pos, to_pos)
+	local result = physics.raycast(from_pos, to_pos, RAYCAST_WALLS, { all = true }) or {}
+	for _, hit in ipairs(result) do
+		if hit.group == hash("walls") then
+			return false
+		end
+	end
+	return true
+end
+
+-- Devuelve el siguiente punto de la estela al que debe moverse el gato
+-- (seguimiento waypoint a waypoint, estilo Fear & Hunger).
+-- La posición del gato sobre la estela se mantiene con un CURSOR MONÓTONO
+-- (self.pet_trail_off, offset desde el jugador; 0 = posición más reciente):
+-- +1 por cada entrada nueva del jugador, -1 por cada paso que da el gato.
+-- No se re-deriva del "waypoint más cercano" (C) porque, cuando el jugador
+-- vuelve sobre sus propios pasos y atraviesa al gato, la estela se pliega
+-- sobre sí misma y C salta entre waypoints de AMBOS lados del gato → la
+-- animación parpadea (dirección y walk/idle alternando cada frame). Con el
+-- cursor, el gato nunca "salta" de lado: espera mientras le atraviesan y
+-- reanuda el seguimiento en la nueva dirección con una única transición.
+-- Devuelve (pos, rejoin):
+--   • (nil) → estela demasiado corta, o el gato está en su punto objetivo
+--     (cursor ≤ T + PET_RESUME_MARGIN con latch): espera quieto.
+--   • (pos, false) → en la estela: avanza un waypoint hacia el jugador
+--     (cursor-1). Así recorre EXACTAMENTE el camino del jugador, sin raycasts
+--     de paredes ni esquive (cat_nav N1-N4).
+--   • (pos, true) → reenganche tras combate (cursor sin anclar) o gato LEJOS
+--     de la estela (> PET_REJOIN_DIST): navega para reincorporarse. Objetivo
+--     híbrido: el punto de seguimiento T (derivado de la posición ACTUAL del
+--     jugador) si la línea directa está despejada de paredes; si hay pared, el
+--     waypoint más cercano (C) y desde ahí el camino transitable de la estela.
+local function get_follow_step(self, my_pos, follow_dist)
+	local count = self.trail_count
+	if count < 2 then
+		return nil
+	end
+
+	-- Índice T: primer waypoint cuya distancia acumulada desde el jugador
+	-- (índice 0 = más reciente) alcanza follow_dist; por defecto el más antiguo.
+	local T = count - 1
+	local acc = 0
+	local prev = self.trail[trail_idx(self.trail_head, 0)]
+	for i = 1, count - 1 do
+		local curr = self.trail[trail_idx(self.trail_head, i)]
+		if curr then
+			acc = acc + vmath.length(prev - curr)
+			if acc >= follow_dist then
+				T = i
+				break
+			end
+			prev = curr
+		end
+	end
+
+	-- Índice C: waypoint de la estela más cercano al gato
+	local C = 0
+	local best_d2 = math.huge
+	for i = 0, count - 1 do
+		local wp = self.trail[trail_idx(self.trail_head, i)]
+		if wp then
+			local ddx = my_pos.x - wp.x
+			local ddy = my_pos.y - wp.y
+			local d2 = ddx * ddx + ddy * ddy
+			if d2 < best_d2 then
+				best_d2 = d2
+				C = i
+			end
+		end
+	end
+
+	-- 🚨 ATASCO EN EL AVANCE DIRECTO (empujando un muro): forzar reincorporación
+	--    con nav apuntando al punto objetivo T, NO al waypoint más cercano C
+	--    (que puede estar a ~2 px al otro lado del muro: nav se atascaría al
+	--    instante). Apuntar a T (a pet_follow_dist del jugador) da margen al
+	--    wall-following N1-N4 para rodear el muro y retomar la estela.
+	if self.pet_stuck then
+		dprint("[GATO-PET] Atasco activo: navegando a T=" .. T .. " para rodear el muro")
+		self.pet_trail_off = nil
+		self.pet_moving = false
+		return self.trail[trail_idx(self.trail_head, T)], true
+	end
+
+	-- 🚨 REENGANCHE TRAS COMBATE (cursor sin anclar) o LEJOS DE LA ESTELA:
+	--    reincorporarse a la estela. Se comprueba ANTES que la llegada para
+	--    que un gato perdido (lejos de la estela y con cursor ≤ T) nunca se
+	--    quede quieto indefinidamente.
+	--    🆕 Atajo directo (Ago 2026): si la línea al punto de seguimiento T
+	--    (derivado de la posición ACTUAL del jugador) está despejada de
+	--    paredes, el gato navega directo a T y NO deshace la estela plegada
+	--    grabada durante el combate (recorrido caótico). Esto aplica TAMBIÉN
+	--    cuando el gato quedó CERCA de la estela pero sin cursor (combate
+	--    junto al jugador): el latch del cursor a C en un pliegue era el que
+	--    provocaba reandar todo el recorrido. Si hay pared, fallback seguro:
+	--    rejoin al waypoint más cercano (C) y camino transitable por la estela.
+	local lost = best_d2 > PET_REJOIN_DIST_SQR
+	if lost or self.pet_trail_off == nil then
+		local t_wp = self.trail[trail_idx(self.trail_head, T)]
+		if t_wp and has_clear_path(my_pos, t_wp) then
+			local tdx = my_pos.x - t_wp.x
+			local tdy = my_pos.y - t_wp.y
+			if (tdx * tdx + tdy * tdy) > PET_REJOIN_DIST_SQR then
+				dprint("[GATO-PET] Reenganche directo a T: distT="
+					.. string.format("%.0f", math.sqrt(tdx * tdx + tdy * tdy))
+					.. ", C=" .. C .. ", T=" .. T .. ", count=" .. count)
+				self.pet_trail_off = nil
+				self.pet_moving = false
+				return t_wp, true
+			end
+			-- Ya cerca de T: anclar el cursor ahí para retomar la estela desde
+			-- el punto de seguimiento (el gato está físicamente cerca de él).
+			self.pet_trail_off = T
+		elseif lost then
+			dprint("[GATO-PET] Rejoin a estela (pared): dist=" .. string.format("%.0f", math.sqrt(best_d2))
+				.. "px, C=" .. C .. ", T=" .. T .. ", count=" .. count)
+			self.pet_trail_off = nil
+			self.pet_moving = false
+			return self.trail[trail_idx(self.trail_head, C)], true
+		end
+	end
+
+	-- 🐾 CURSOR MONÓTONO: relatch solo cuando no hay cursor (inicial / tras
+	--    rejoin / tras combate) o cuando el ring buffer ya lo ha descartado
+	--    (off ≥ count). El resto del tiempo el cursor avanza por sí solo:
+	--    update_pet le suma +1 cuando el jugador registra una entrada y le
+	--    resta -1 cuando el gato da un paso.
+	local off = self.pet_trail_off
+	if off == nil or off >= count then
+		off = C
+		self.pet_trail_off = off
+	end
+
+	-- Latch de movimiento con histéresis: mientras se mueve, no se detiene
+	-- hasta alcanzar el slot (cursor ≤ T); estando quieto, solo arranca si
+	-- queda > PET_RESUME_MARGIN waypoints por detrás de su slot. Esto evita
+	-- el parpadeo walk/idle cuando el cursor está en el borde de T.
+	if self.pet_moving then
+		if off <= T then
+			self.pet_moving = false
+			return nil
+		end
+	else
+		if off <= T + PET_RESUME_MARGIN then
+			return nil
+		end
+		self.pet_moving = true
+	end
+
+	-- En la estela: avanzar un waypoint hacia el jugador (nunca más allá de T;
+	-- off > T + MARGIN garantiza off ≥ 1).
+	local next_off = math.max(0, off - 1)
+	return self.trail[trail_idx(self.trail_head, next_off)], false
+end
+
+-- Reproduce idle o idle_sitting según el timer de jugador quieto, manteniendo
+-- el ronroneo en bucle mientras el gato está sentado, y limpia el estado de
+-- navegación para que no "rebote" fuera de la zona idle.
+local function idle_or_sit(self, dt)
+	local sit_anim = (self.player_idle_timer >= self.sit_idle_time) and "idle_sitting" or "idle"
+	play_anim(self, sit_anim)
+	if sit_anim == "idle_sitting" then
+		-- Ronroneo en bucle mientras está sentado: relanza el clip cada
+		-- PURR_LOOP_INTERVAL segundos (el ogg dura ~5s)
+		self.purr_timer = self.purr_timer - dt
+		if self.purr_timer <= 0 then
+			sound.play("#cat_purr")
+			self.purr_timer = PURR_LOOP_INTERVAL
+		end
+		self.purr_playing = true
+	else
+		-- Si se levanta (el jugador se movió), detener el ronroneo
+		stop_purr(self)
+	end
+	-- Limpiar correcciones de pared y estado de navegación
+	-- para evitar que el gato "rebote" fuera de la zona idle
+	self.wall_push_pos = vmath.vector3()
+	self.wall_push_neg = vmath.vector3()
+	nav.reset(self)
+end
+
+function update_pet(self, dt, player_pos, my_pos, dist_to_player)
+	-- Reducir timer
+	self.pet_timer = self.pet_timer - dt
+
+	-- ⏱️ Actualizar el pie timer del HUD a 10Hz (modelo pie_timer_to_exhibition):
+	--    el ángulo del pie se vacía 360° → 0° según el tiempo restante.
+	self.pet_hud_timer = self.pet_hud_timer + dt
+	if self.pet_hud_timer >= PET_HUD_UPDATE_INTERVAL then
+		self.pet_hud_timer = 0
+		local progress = 0
+		if self.pet_duration > 0 then
+			progress = self.pet_timer / self.pet_duration
+		end
+		msg.post(self.hud_url, MSG_UPDATE_PET_TIMER, { remaining = self.pet_timer, progress = progress })
+	end
+
+	-- Detectar si el jugador está quieto (para elegir idle_sitting):
+	-- si no se mueve más de ~1px, acumular tiempo; si se mueve, resetear.
+	if self.last_player_pos then
+		if vmath.length(player_pos - self.last_player_pos) > 1 then
+			self.player_idle_timer = 0
+		else
+			self.player_idle_timer = self.player_idle_timer + dt
+		end
+	else
+		self.player_idle_timer = 0
+	end
+	self.last_player_pos = vmath.vector3(player_pos)
+
+	-- 📝 Registrar posición del jugador en la estela (ring buffer).
+	--    Dedup: solo se añade una entrada si el jugador se movió ≥ 2 px,
+	--    para que la estela conserve la forma del camino cuando el jugador
+	--    está quieto (clave para calcular "60 px detrás" sobre la ruta real).
+	local trail_last = self.trail[self.trail_head]
+	local trail_moved = true
+	if trail_last then
+		local ddx = player_pos.x - trail_last.x
+		local ddy = player_pos.y - trail_last.y
+		trail_moved = (ddx * ddx + ddy * ddy) >= 4.0
+	end
+	if trail_moved then
+		self.trail_head = self.trail_head % PET_TRAIL_SIZE + 1
+		self.trail[self.trail_head] = player_pos
+		self.trail_count = math.min(self.trail_count + 1, PET_TRAIL_SIZE)
+		-- El cursor del gato avanza con la estela: el gato queda un waypoint
+		-- más atrás respecto al jugador. (Si es nil, get_follow_step relatch.)
+		if self.pet_trail_off then
+			self.pet_trail_off = self.pet_trail_off + 1
+		end
+	end
+
+	-- Comprobar enemigos visibles cerca del jugador (prioridad)
+	local visible_enemy = find_visible_enemy_near(self, player_pos)
+	if visible_enemy then
+		-- El gato no ronronea mientras pelea/persigue
+		stop_purr(self)
+		-- El gato deja la estela para combatir: el cursor se relatch al volver
+		self.pet_trail_off = nil
+		self.pet_moving = false
+		-- 🚪 El gato abandona la espera en puerta para combatir (la re-detectará
+		--    si vuelve a la estela bloqueada)
+		self.pet_door_wait = false
+		self.pet_door_trial_pending = false
+		self.pet_door_target = nil
+		-- 🔄 Invalidar cualquier reenganche en curso: si un rejoin fue
+		--    interrumpido por este combate, el próximo reenganche debe hacer
+		--    nav.reset() (si pet_rejoining quedara en true, se saltaría la
+		--    limpieza y arrastraría el estado de navegación sucio del combate).
+		self.pet_rejoining = false
+		self.current_enemy = visible_enemy
+		-- Atacar enemigo (no perseguir lejos)
+		local enemy_pos = go.get_position(visible_enemy)
+		local dist_to_enemy = vmath.length(my_pos - enemy_pos)
+
+		if dist_to_enemy < self.attack_range then
+			-- Atacar (direccional)
+			if self.attack_timer <= 0 then
+				self.attack_timer = self.attack_cooldown
+				play_anim(self, attack_anim(self, enemy_pos))
+				sound.play("#cat_attack")
+				msg.post(visible_enemy, "take_damage", { amount = self.attack_damage })
+			end
+		else
+			-- Moverse hacia el enemigo (pero no alejarse mucho del jugador)
+			nav.move_towards(self, enemy_pos, self.patrol_speed * 2, dt)
+			play_anim(self, walk_anim(self, self.patrol_speed * 2))
+		end
+		return
+	end
+
+	-- Si el timer expiró, volver a patrulla
+	if self.pet_timer <= 0 then
+		-- 🐾 Limpieza común de salida del modo PET
+		exit_pet(self)
+		-- Consumir la comida y reponer (usando URL dinámica del contenedor)
+		game_state.set_global("cat_food_count", 0)
+		if food_state.container_url then
+			msg.post(food_state.container_url, "food_used")
+		end
+
+		self.state = STATE.RETURN_PATROL
+		nav.reset(self)
+		dprint("[GATO] Timer PET expirado → RETURN_PATROL")
+		return
+	end
+
+	-- 🚪 ESPERA EN PUERTA CERRADA: la estela cruza una puerta interactiva que el
+	--    jugador cerró detrás de sí. Rodearla es imposible (empotrada en la pared),
+	--    así que el gato se sienta junto a la puerta, maúlla de vez en cuando y
+	--    reanuda el seguimiento en cuanto la abran. Mecánica: avances de prueba
+	--    periódicos (PET_DOOR_TRIAL_STEP px) hacia el punto bloqueado — si el avance
+	--    deja de recibir contacto con la puerta, esta se abrió (doors.script
+	--    desactiva collisionobject_npcs) → salida. La corrección de pared (wall_push)
+	--    deshace el avance mientras la puerta siga cerrada.
+	if self.pet_door_wait then
+		-- Maullido periódico: avisa al jugador de que se quedó al otro lado
+		self.pet_door_meow_timer = self.pet_door_meow_timer - dt
+		if self.pet_door_meow_timer <= 0 then
+			self.pet_door_meow_timer = PET_DOOR_MEOW_INTERVAL
+			sound.play("#cat_meow")
+		end
+
+		self.pet_door_probe_timer = self.pet_door_probe_timer - dt
+
+		-- 1) Confirmar el avance de prueba del probe anterior: si el último paso de
+		--    física NO tuvo contacto con pared, el avance no fue bloqueado → la
+		--    puerta se abrió → reanudar el seguimiento.
+		if self.pet_door_trial_pending then
+			if self.walls_contacted then
+				-- La puerta sigue cerrada: el avance fue deshecho por la corrección
+				self.pet_door_trial_pending = false
+			else
+				self.pet_door_trial_pending = false
+				self.pet_door_wait = false
+				-- 🐾 Reanudar COMO TRAS UN COMBATE (mismo reset que el combate): relatch
+				--    de la estela (pet_trail_off = nil) para que el reenganche de
+				--    get_follow_step decida: si la línea directa gato→T está despejada
+				--    (a través de la puerta abierta) toma el ATAJO a T y no reanda toda
+				--    la estela; si hay pared, retoma la estela waypoint a waypoint.
+				--    Sin esto, el gato reandaba TODO el recorrido desde su cursor
+				--    anclado (que durante la espera siguió avanzando), p. ej. el rodeo
+				--    del jugador al otro lado cuando la línea recta por la puerta
+				--    estaba libre.
+				self.pet_trail_off = nil
+				self.pet_moving = false
+				self.pet_stuck = false
+				self.pet_stuck_timer = 0
+				self.pet_progress_timer = 0
+				self.pet_progress_last_pos = nil
+				dprint("[GATO-PET] Puerta abierta → reanuda (reenganche: atajo o estela)")
+			end
+		end
+
+		-- 2) Probe periódico: si la puerta sigue cerrada el gato permanece apoyado
+		--    (contactos cada frame) y no hace falta probar; si dejó de estarlo, se
+		--    hace un avance de prueba hacia el punto bloqueado guardado.
+		if self.pet_door_wait and self.pet_door_probe_timer <= 0 then
+			self.pet_door_probe_timer = PET_DOOR_PROBE_INTERVAL
+			if not self.walls_contacted and self.pet_door_target then
+				local dir = self.pet_door_target - my_pos
+				dir.z = 0
+				local len = vmath.length(dir)
+				if len > 0.001 then
+					go.set_position(my_pos + vmath.normalize(dir) * PET_DOOR_TRIAL_STEP)
+					self.pet_door_trial_pending = true
+				else
+					-- Objetivo inválido (estela descartada): reanudar el seguimiento
+					-- con reenganche (mismo reset que tras combate: relatch de la estela)
+					self.pet_door_wait = false
+					self.pet_trail_off = nil
+					self.pet_moving = false
+					self.pet_stuck = false
+					self.pet_stuck_timer = 0
+					self.pet_progress_timer = 0
+					self.pet_progress_last_pos = nil
+				end
+			end
+		end
+
+		-- Reset del flag de contacto del frame (se refresca en on_message)
+		self.walls_contacted = false
+
+		if self.pet_door_wait then
+			-- Esperando: sentado junto a la puerta, sin ronroneo
+			play_anim(self, "idle_sitting")
+			return
+		end
+		-- Si salió de la espera, continúa con el seguimiento normal este frame
+	end
+
+	-- 🐾 SEGUIMIENTO POR ESTELA (estilo Fear & Hunger): el gato avanza
+	--    waypoint a waypoint por la estela del jugador — el camino que YA
+	--    recorrió el jugador es transitable por construcción. Al no navegar
+	--    en línea recta hacia un punto lejano, no se activan los raycasts de
+	--    paredes ni la escalada de desatasco N1-N4 de cat_nav, que eran los
+	--    que causaban el comportamiento errático junto a las paredes.
+	--    get_follow_step devuelve nil cuando el gato ya está en su punto
+	--    objetivo (cursor ≤ T con latch de histéresis PET_RESUME_MARGIN): es
+	--    el ÚNICO criterio de "llegado" (los waypoints consecutivos están a
+	--    solo ~2 px por el dedup, así que un umbral de distancia aquí
+	--    bloquearía el avance).
+	--    El 2º valor (rejoin) indica REENGANCHE: cursor sin anclar (tras
+	--    combatir, aunque el gato quede cerca de la estela) o gato lejos de
+	--    la estela (> PET_REJOIN_DIST). Se usa nav.move_towards (con esquive
+	--    de paredes) hasta reincorporarse. Objetivo híbrido: el punto de
+	--    seguimiento T (posición ACTUAL del jugador) si el atajo directo está
+	--    despejado de paredes; si no, el waypoint más cercano (C) y el camino
+	--    transitable de la estela.
+	--    Excepción: si el avance directo detecta un atasco contra un muro
+	--    (pet_stuck, sin progreso en PET_STUCK_TIMEOUT), también devuelve
+	--    rejoin=true pero apuntando a T (margen para rodear el muro).
+	local speed = (dist_to_player > self.pet_max_dist) and (self.pet_speed * 2) or self.pet_speed
+	local step_pos, rejoining = get_follow_step(self, my_pos, self.pet_follow_dist)
+
+	if step_pos then
+		local to_next = step_pos - my_pos
+		to_next.z = 0
+		local dist_next = vmath.length(to_next)
+
+		if rejoining then
+			-- 🚪 Durante la reincorporación (p. ej. atajo directo tras combate) el
+			--    gato puede chocar con una puerta cerrada: entrar en espera en vez
+			--    de escalar N1-N4 (que no puede rodear una puerta empotrada).
+			if self.wall_contact_is_door then
+				self.pet_door_wait = true
+				self.pet_door_probe_timer = 0
+				self.pet_door_trial_pending = false
+				self.pet_door_meow_timer = PET_DOOR_MEOW_INTERVAL * 0.5
+				self.pet_door_target = vmath.vector3(step_pos)
+				self.pet_progress_timer = 0
+				self.pet_progress_last_pos = nil
+				self.pet_stuck_timer = 0
+				nav.reset(self)
+				dprint("[GATO-PET] Puerta cerrada durante reincorporación → esperando")
+				return
+			end
+			-- 🔄 Transición a reincorporación: limpiar el estado de navegación
+			-- (puede quedar sucio del combate, que también usa nav.move_towards).
+			-- Se limpia SOLO el acumulador de progreso (la medición de ventana
+			-- no corre durante la reincorporación; nav gestiona su propio
+			-- desatasco N1-N4). pet_stuck NO se limpia aquí: si el rejoin es
+			-- por atasco, debe seguir forzando el objetivo T hasta llegar.
+			if not self.pet_rejoining then
+				nav.reset(self)
+				self.pet_rejoining = true
+				self.pet_progress_timer = 0
+				self.pet_progress_last_pos = nil
+			end
+			-- Navegar con esquive de paredes hasta el waypoint objetivo.
+			-- Al acercarse (< PET_REJOIN_DIST), el siguiente frame devuelve
+			-- (pos, false) y se retoma el avance directo por la estela.
+			if dist_next > 0.001 then
+				local arrived = nav.move_towards(self, step_pos, speed, dt)
+				if arrived then
+					-- Llegó al waypoint de reincorporación: si el rejoin era por
+					-- atasco, este es el momento de limpiar el flag (el gato ya
+					-- está físicamente en la estela / en su objetivo).
+					if self.pet_stuck then
+						self.pet_stuck = false
+						self.pet_stuck_timer = 0
+						dprint("[GATO-PET] Atasco resuelto: llegó al punto de reincorporación")
+					end
+				else
+					stop_purr(self)
+					play_anim(self, walk_anim(self, speed))
+				end
+			end
+		else
+			self.pet_rejoining = false
+
+			-- 📏 Detección de atasco en ventana: medir el desplazamiento REAL
+			-- del gato cada PET_PROGRESS_INTERVAL (ignora el jitter del
+			-- wall_push). Si lleva PET_STUCK_TIMEOUT sin progresar, está
+			-- empujando un muro → get_follow_step forzará la reincorporación
+			-- con nav (esquive de paredes) hacia T.
+			self.pet_progress_timer = self.pet_progress_timer + dt
+			if self.pet_progress_timer >= PET_PROGRESS_INTERVAL then
+				self.pet_progress_timer = 0
+				local progressed = false
+				if self.pet_progress_last_pos then
+					local pdx = my_pos.x - self.pet_progress_last_pos.x
+					local pdy = my_pos.y - self.pet_progress_last_pos.y
+					progressed = (pdx * pdx + pdy * pdy) >= PET_PROGRESS_MIN * PET_PROGRESS_MIN
+					self.pet_progress_last_pos = vmath.vector3(my_pos)
+				else
+					-- Primera ventana: solo inicializar la referencia
+					self.pet_progress_last_pos = vmath.vector3(my_pos)
+					progressed = true
+				end
+				if progressed then
+					self.pet_stuck_timer = 0
+				else
+					self.pet_stuck_timer = self.pet_stuck_timer + PET_PROGRESS_INTERVAL
+					if not self.pet_stuck and self.pet_stuck_timer >= PET_STUCK_TIMEOUT then
+						if self.wall_contact_is_door then
+							-- 🚪 PUERTA CERRADA delante: la estela cruza una puerta que el
+							--    jugador cerró detrás de sí. Rodearla es imposible (empotrada
+							--    en la pared), así que en vez de forzar la escalada N1-N4
+							--    (que no puede resolverla y deja al gato errático), esperar
+							--    sentado junto a la puerta y reanudar al abrirla (bloque de
+							--    espera al inicio de update_pet).
+							self.pet_door_wait = true
+							self.pet_door_probe_timer = 0
+							self.pet_door_trial_pending = false
+							self.pet_door_meow_timer = PET_DOOR_MEOW_INTERVAL * 0.5
+							self.pet_door_target = vmath.vector3(step_pos)
+							-- Reset del acumulador de progreso: la medición no debe seguir
+							--    corriendo mientras se espera (el gato no avanza a propósito).
+							self.pet_progress_timer = 0
+							self.pet_progress_last_pos = nil
+							self.pet_stuck_timer = 0
+							dprint("[GATO-PET] Puerta cerrada delante → esperando (reanuda al abrir)")
+						else
+							self.pet_stuck = true
+							dprint("[GATO-PET] Atasco detectado: empujando un muro → reincorporación con nav")
+						end
+					end
+				end
+			end
+
+			-- En la estela: avance directo (normalizar solo si no es nulo):
+			-- el avance "rebasa" ligeramente y el cursor se recalcula (decremento
+			-- fuera del guard: si dist_next ≤ 0.001 el gato YA está sobre el
+			-- waypoint objetivo, así que el cursor avanza igualmente).
+			if dist_next > 0.001 then
+				stop_purr(self)
+				local dir = vmath.normalize(to_next)
+				self.nav_dir_x = dir.x
+				self.nav_dir_y = dir.y
+				go.set_position(my_pos + dir * speed * dt)
+				play_anim(self, walk_anim(self, speed))
+			end
+			-- El gato da un paso hacia el jugador por la estela
+			if self.pet_trail_off then
+				self.pet_trail_off = math.max(0, self.pet_trail_off - 1)
+			end
+		end
+	else
+		self.pet_rejoining = false
+		self.pet_moving = false
+		-- Limpiar estado de atasco/progreso al llegar (o estela vacía): el
+		-- gato ya está en su punto objetivo, no hay muro que empujar.
+		if self.pet_stuck then
+			self.pet_stuck = false
+			dprint("[GATO-PET] Atasco resuelto: llegó a su punto objetivo")
+		end
+		self.pet_stuck_timer = 0
+		self.pet_progress_timer = 0
+		self.pet_progress_last_pos = nil
+		-- Llegó a su punto objetivo (o estela vacía): idle o sentarse
+		idle_or_sit(self, dt)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔙 RETURN_PATROL (volver al spawn tras PET)
+-- ═══════════════════════════════════════════════════════
+
+function update_return_patrol(self, dt)
+	local my_pos = go.get_position()
+	local dist_to_spawn = vmath.length(my_pos - self.spawn_pos)
+
+	if dist_to_spawn < 30 then
+		-- Llegó al spawn
+		patrol.init(self, self.spawn_pos, CAT_BODY_HALF, CAT_BODY_HALF)  -- Reiniciar patrulla
+		self.state = STATE.PATROL
+		nav.reset(self)
+		dprint("[GATO] Llegó al spawn → PATROL")
+		return
+	end
+
+	-- Navegar hacia el spawn
+	nav.move_towards(self, self.spawn_pos, self.patrol_speed, dt)
+	play_anim(self, walk_anim(self, self.patrol_speed))
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 💀 RESET DEL GATO (muerte del jugador)
+-- ═══════════════════════════════════════════════════════
+--
+--   Enviado por player.script (trigger_death) vía npc_spawn_state cuando el
+--   jugador muere: el gato abandona CUALQUIER estado activo (PET, CHASE,
+--   ATTACK, RETURN_PATROL...), vuelve a su punto de spawn inicial y reinicia
+--   la patrulla, como si el mundo se hubiera reiniciado.
+
+local function reset_cat(self)
+	-- 💡 Gate: solo se resetea si el gato estaba ACOMPAÑANDO al jugador
+	--    (PET) o volviendo de él (RETURN_PATROL). Un gato en PATROL normal
+	--    ya está en su patrulla: no se le teletransporta por la muerte.
+	if self.state ~= STATE.PET and self.state ~= STATE.RETURN_PATROL then
+		return
+	end
+
+	-- 🐾 Limpieza común de salida del modo PET
+	exit_pet(self)
+
+	-- 🧹 Limpiar estado stale de detección de jugador quieto (idle_sitting)
+	self.player_idle_timer = 0
+	self.last_player_pos = nil
+
+	-- 🧹 Limpiar objetivo de combate y detección
+	self.current_enemy = nil
+	self.nearby_enemies = {}
+	nav.reset(self)
+
+	-- 📍 Volver al punto de spawn inicial
+	go.set_position(self.spawn_pos)
+
+	-- 🚶 Reiniciar la patrulla desde el spawn
+	if self.patrol_enabled then
+		patrol.init(self, self.spawn_pos, CAT_BODY_HALF, CAT_BODY_HALF)
+		self.patrol_speed = self.patrol_speed or 30
+		self.patrol_radius = self.patrol_radius or 200
+	end
+	self.state = STATE.PATROL
+	set_visible(self, true)
+	play_anim(self, "idle")
+	dprint("[GATO] Reset tras muerte del jugador → PATROL en spawn")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INTERACCIÓN DEL JUGADOR
+-- ═══════════════════════════════════════════════════════
+
+-- LOCAL: evita colision con bookcase.script y otros que definan on_interact global.
+--        Debe definirse ANTES de on_message para que el closure la capture.
+local function on_interact(self)
+	dprint("[GATO] on_interact ejecutándose (cat_food_count=" .. tostring(game_state.get_global("cat_food_count")) .. ")")
+	local cat_food = tonumber(game_state.get_global("cat_food_count") or 0)
+
+	if cat_food >= 1 then
+		-- Activar modo mascota
+		self.pet_timer = self.pet_duration
+		self.pet_hud_timer = 0
+		self.state = STATE.PET
+		nav.reset(self)
+		set_visible(self, true)
+
+		-- 🐾 Marcar PET activo: los sensores de interacción (mobile_interact)
+		--    excluyen al gato de los candidatos del botón option mientras siga
+		--    al jugador (a pet_follow_dist siempre ganaría la selección de
+		--    "más cercano" y bloquearía NPCs/objetos). Se limpia en exit_pet.
+		npc_spawn_state.set_cat_pet_active(true)
+
+		-- 🚫 Durante PET el gato es un acompañante NO-físico: desactivamos su
+		--    colisión con el jugador (collisionobject_player, group "npcs" ↔
+		--    player "player_npcs") para que no le empuje ni le impida el paso
+		--    al seguirlo de cerca.
+		msg.post("#collisionobject_player", "disable")
+
+		-- Reiniciar detección de jugador quieto
+		self.player_idle_timer = 0
+		self.last_player_pos = nil
+
+		-- Reiniciar la estela del jugador para el nuevo seguimiento
+		self.trail_head = 0
+		self.trail_count = 0
+		self.pet_rejoining = false
+		-- Limpiar estado de atasco/progreso de una sesión PET anterior
+		self.pet_stuck = false
+		self.pet_stuck_timer = 0
+		self.pet_progress_timer = 0
+		self.pet_progress_last_pos = nil
+		-- Limpiar cursor y latch de movimiento para el nuevo seguimiento
+		self.pet_trail_off = nil
+		self.pet_moving = false
+		-- 🚪 Limpiar espera en puerta de una sesión PET anterior
+		self.pet_door_wait = false
+		self.pet_door_trial_pending = false
+		self.pet_door_target = nil
+
+		-- Consumir la comida
+		game_state.set_global("cat_food_count", 0)
+
+		-- Notificar al contenedor (URL dinámica desde food_spawn_state)
+		if food_state.container_url then
+			msg.post(food_state.container_url, "food_used")
+		end
+
+		-- 🐾 Limpiar el estado de hover al entrar en PET (GOTCHA #16, docs/DEV_GOTCHAS.md):
+		--    durante PET el exit de mouse_hover se ignora (if self.state ~= STATE.PET),
+		--    así que sin esto el hint (show_persistent_alert) quedaba colgado como
+		--    alerta persistente hasta que el gato dejaba de ser mascota, y reaparecía
+		--    tras otras interacciones (el HUD lo re-encolaba como transitorio). Lo
+		--    mismo con el tinte de highlight del sprite (1.3), que se quedaba fijo.
+		highlight_sprite(self, false)
+		msg.post(self.hud_url, "hide_persistent_alert")
+
+		-- Mostrar mensaje de activación PET
+		msg.post(self.hud_url, "show_alert", { text = self.hint_cat_pet_start })
+
+		-- ⏱️ Mostrar el pie timer del HUD (relleno completo al inicio)
+		msg.post(self.hud_url, MSG_UPDATE_PET_TIMER, { remaining = self.pet_duration, progress = 1 })
+
+		-- Sonido de ronroneo
+		sound.play("#cat_purr")
+
+		dprint("[GATO] Modo mascota activado (" .. self.pet_duration .. "s)")
+	else
+		-- No tiene comida: maullido
+		sound.play("#cat_meow")
+
+		-- Si está en PATROL o INTERACT, cambiar a INTERACT
+		if self.state == STATE.PATROL then
+			self.state = STATE.INTERACT
+			dprint("[GATO] Interacción sin comida → INTERACT")
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	-- 🐱 DIAGNÓSTICO SILENCIOSO: solo loguear mensajes relevantes
+	--    (collision_response y contact_point_response spamean cada frame)
+	local msg_str = tostring(message_id)
+	if msg_str ~= "hash: [collision_response]"
+	   and msg_str ~= "hash: [trigger_response]"
+	   and msg_str ~= "hash: [contact_point_response]" then
+		dprint("[GATO] " .. msg_str .. " de " .. tostring(sender))
+	end
+
+	-- 🖱️ HOVER: iluminar sprite + mostrar/ocultar texto (solo si no está en PET)
+	if message_id == hash("mouse_hover") then
+		if self.state ~= STATE.PET then
+			highlight_sprite(self, message.enter)
+			if message.enter then
+				msg.post(self.hud_url, "show_persistent_alert", { text = self.hint_cat_hover })
+			else
+				msg.post(self.hud_url, "hide_persistent_alert")
+			end
+		end
+
+	-- 🖱️ INTERACT (clic del jugador)
+	elseif message_id == hash("interact") then
+		on_interact(self)
+
+	-- 🔍 ENEMIGO DETECTADO POR TRIGGER (collisionobject_enemy)
+	--    ⚠️ GOTCHA: el collisionobject_enemy del gato y el collisionobject_bullet
+	--    de las cucarachas son AMBOS TRIGGERS (grupos "spray" ↔ "enemy"). Entre
+	--    dos triggers el engine envía trigger_response (con other_group), NO
+	--    contact_point_response (que solo ocurre en colisiones no-trigger).
+	--    Antes se escuchaba contact_point_response con message.group == "enemy"
+	--    → nunca se detectaba a las cucarachas por este camino.
+	elseif message_id == hash("trigger_response") then
+		if message.enter and message.other_group == hash("enemy") then
+			local other_id = message.other_id
+			if other_id and go.exists(other_id) then
+				self.nearby_enemies[tostring(other_id)] = other_id
+			end
+		end
+
+	-- 🧱 COLISIÓN CON PAREDES
+	elseif message_id == hash("contact_point_response") then
+		if message.group == hash("walls") then
+			-- 🚪 Contacto con pared del último paso de física: alimenta la espera en
+			--    puerta del modo PET (walls_contacted / wall_contact_is_door). Un gato
+			--    bloqueado por una puerta cerrada recibe contactos cada frame con el
+			--    GO de la puerta (nombre contiene "door_") — sin raycasts ni
+			--    dependencia de máscaras de grupos.
+			self.walls_contacted = true
+			self.wall_contact_is_door = is_door_object(message.other_id)
+			if self.state == STATE.PATROL then
+				patrol.on_contact_point(self, message)
+			else
+				-- Resto de estados (CHASE, PET, ATTACK, RETURN_PATROL, INTERACT):
+				-- Acumular corrección (mismo algoritmo que npc_patrol.lua)
+				-- para empujar al gato fuera de las paredes.
+				local comp = message.normal * message.distance
+				if comp.x > 0 then
+					self.wall_push_pos.x = math.max(self.wall_push_pos.x, comp.x)
+				elseif comp.x < 0 then
+					self.wall_push_neg.x = math.min(self.wall_push_neg.x, comp.x)
+				end
+				if comp.y > 0 then
+					self.wall_push_pos.y = math.max(self.wall_push_pos.y, comp.y)
+				elseif comp.y < 0 then
+					self.wall_push_neg.y = math.min(self.wall_push_neg.y, comp.y)
+				end
+
+				-- Pasar la normal de la pared a cat_nav para wall-following
+				-- (el raycast en cat_nav apunta hacia el target, no detecta
+				--  paredes laterales contra las que el gato está atascado)
+				if vmath.length_sqr(message.normal) > 0 then
+					self.nav_wall_normal = message.normal
+				end
+			end
+		end
+
+	-- 💥 DAÑO RECIBIDO (del spray del jugador, etc.)
+	elseif message_id == hash("take_damage") or message_id == hash("hit") then
+		-- Por ahora: solo maullido de queja
+		sound.play("#cat_angry")
+
+	-- 🎯 SPAWN: el gestor de spawn reposicionó al gato (p. ej. al colocar
+	--    spawn_npc_cat). Re-anclar spawn/patrulla y volver al estado de
+	--    espera para que reaparezca junto al jugador.
+	elseif message_id == hash("npc_spawn_updated") then
+		self.spawn_pos = go.get_position()
+		if self.patrol_enabled then
+			patrol.init(self, self.spawn_pos, CAT_BODY_HALF, CAT_BODY_HALF)
+			self.patrol_speed = self.patrol_speed or 30
+			self.patrol_radius = self.patrol_radius or 200
+		end
+		self.state = STATE.INACTIVE
+		set_visible(self, false)
+		-- ⏱️ Red de seguridad: si el gato fuera reposicionado en mitad de PET,
+		--    ocultar el pie timer del HUD (no pasa por exit_pet)
+		msg.post(self.hud_url, MSG_HIDE_PET_TIMER)
+		-- 🐾 Red de seguridad: si el gato fuera reposicionado en mitad de PET,
+		--    el modo mascota termina de facto → limpiar el flag de exclusión
+		npc_spawn_state.set_cat_pet_active(false)
+
+	-- 💀 RESET POR MUERTE DEL JUGADOR: el gato abandona el modo PET (o
+	--    cualquier estado activo), vuelve a su spawn inicial y a patrulla.
+	--    Enviado por player.script (trigger_death) vía npc_spawn_state.
+	elseif message_id == hash("reset_cat") then
+		reset_cat(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 DETECCIÓN DE ENEMIGOS
+-- ═══════════════════════════════════════════════════════
+
+-- Escanea enemigos para el gato. Vías de detección:
+--  1. 🐱 IDS REALES registrados en enemy_state por spawn_enemies.script
+--     (factory.create devuelve el id de la instancia; el engine auto-genera
+--     los nombres y factory.create NO acepta parámetro de id, así que adivinar
+--     "enemy_cockroach1" era la causa de no detectar a las del grupo).
+--  2. Cucaracha estática del level_01 (colocada en el editor, no por factory)
+--     y rata fija (si existe): por naming directo.
+-- Además los detectados por el collision trigger se fusionan en las funciones
+-- que llaman a scan_enemies (check_visible_enemy / find_visible_enemy_near).
+local function scan_enemies()
+	local found = {}
+
+	-- 1️⃣ Enemigos creados en runtime (factory.create) — vía fiable
+	for _, enemy_id in ipairs(enemy_state.get_spawned()) do
+		if go.exists(enemy_id) then
+			table.insert(found, enemy_id)
+		end
+	end
+
+	-- 2️⃣ Cucaracha estática del level_01 + rata fija (si existen)
+	local static_bug = msg.url("/enemy_cockroach")
+	if go.exists(static_bug) then
+		table.insert(found, static_bug)
+	end
+
+	local rat_url = msg.url("/enemy_rat")
+	if go.exists(rat_url) then
+		table.insert(found, rat_url)
+	end
+
+	return found
+end
+
+-- Comprueba si hay un enemigo visible (línea de visión) cerca.
+-- Combina escaneo por nombre + enemigos detectados por trigger.
+function check_visible_enemy(self)
+	local my_pos = go.get_position()
+	local enemies = scan_enemies()
+
+	-- Añadir enemigos detectados por trigger (no duplicados)
+	for _, url in pairs(self.nearby_enemies) do
+		local already = false
+		for _, e in ipairs(enemies) do
+			if tostring(e) == tostring(url) then
+				already = true
+				break
+			end
+		end
+		if not already and go.exists(url) then
+			table.insert(enemies, url)
+		end
+	end
+
+	local nearest_enemy = nil
+	local nearest_dist = math.huge
+
+	-- Refresh periódico de la tabla nearby_enemies
+	self.enemy_refresh = self.enemy_refresh + 1
+	if self.enemy_refresh >= 60 then  -- ~cada 60 frames
+		self.enemy_refresh = 0
+		self.nearby_enemies = {}
+	end
+
+	for _, url in ipairs(enemies) do
+		if go.exists(url) then
+			local enemy_pos = go.get_position(url)
+			local dist = vmath.length(enemy_pos - my_pos)
+			if dist < 300 and has_line_of_sight(self, url) then
+				if dist < nearest_dist then
+					nearest_dist = dist
+					nearest_enemy = url
+				end
+			end
+		end
+	end
+
+	if nearest_enemy then
+		self.current_enemy = nearest_enemy
+		return true
+	end
+
+	return false
+end
+
+-- Busca enemigos visibles cerca de una posición (para PET mode).
+-- 🔒 TARGET LOCK con histéresis: si ya hay un objetivo (self.current_enemy)
+-- que sigue siendo válido (vivo, < 250 px del jugador y con línea de visión),
+-- se MANTIENE. Otro enemigo solo se lo arrebata si está claramente más cerca
+-- (distancia < PET_TARGET_SWITCH_FACTOR × la del actual). Sin este lock, con
+-- varios enemigos a distancias similares el "más cercano" cambiaba de frame a
+-- frame → indefinición de target (el gato giraba/bailaba entre ambos).
+function find_visible_enemy_near(self, center_pos)
+	local my_pos = go.get_position()
+	local enemies = scan_enemies()
+
+	-- También añadir detectados por trigger
+	for _, url in pairs(self.nearby_enemies) do
+		local already = false
+		for _, e in ipairs(enemies) do
+			if tostring(e) == tostring(url) then
+				already = true
+				break
+			end
+		end
+		if not already and go.exists(url) then
+			table.insert(enemies, url)
+		end
+	end
+
+	-- 🔒 Lock base: mantener el objetivo actual si sigue siendo válido
+	local locked = self.current_enemy
+	local locked_dist = nil
+	if locked and go.exists(locked) then
+		local locked_pos = go.get_position(locked)
+		if vmath.length(locked_pos - center_pos) < 250 and has_line_of_sight(self, locked) then
+			locked_dist = vmath.length(locked_pos - my_pos)
+		end
+	end
+
+	-- 🚨 IMPORTANTE: solo se siembra el lock si locked_dist es válido. Si el
+	-- enemigo actual murió / salió de rango / perdió línea de visión, devolvemos
+	-- nil cuando no haya otro candidato (nunca la URL del enemigo inválido).
+	local nearest_enemy = nil
+	local nearest_dist = math.huge
+	if locked_dist then
+		nearest_enemy = locked
+		nearest_dist = locked_dist
+	end
+	-- Umbral de robo: un candidato debe estar más cerca que locked_dist × factor
+	-- (sin lock, math.huge → gana el más cercano, como antes)
+	local steal_dist = locked_dist and (locked_dist * PET_TARGET_SWITCH_FACTOR) or math.huge
+
+	for _, url in ipairs(enemies) do
+		if go.exists(url) then
+			local enemy_pos = go.get_position(url)
+			local dist_to_center = vmath.length(enemy_pos - center_pos)
+			-- Enemigo cerca del jugador Y con línea de visión
+			if dist_to_center < 250 and has_line_of_sight(self, url) then
+				local dist_to_cat = vmath.length(enemy_pos - my_pos)
+				if dist_to_cat < nearest_dist and dist_to_cat < steal_dist then
+					nearest_dist = dist_to_cat
+					nearest_enemy = url
+				end
+			end
+		end
+	end
+
+	return nearest_enemy
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 👁️ LÍNEA DE VISIÓN (raycast)
+-- ═══════════════════════════════════════════════════════
+
+function has_line_of_sight(self, target_url)
+	-- Reutiliza has_clear_path (definida antes, mismo bucle de raycast contra
+	-- paredes): true si no hay muro entre el gato y el objetivo
+	return has_clear_path(go.get_position(), go.get_position(target_url))
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎬 ANIMACIONES
+-- ═══════════════════════════════════════════════════════
+
+function play_anim(self, anim_id)
+	if self.current_anim ~= anim_id then
+		if go.exists(self.sprite_url) then
+			sprite.play_flipbook(self.sprite_url, hash(anim_id))
+		end
+		self.current_anim = anim_id
+	end
+end
+
+function sync_patrol_anim(self)
+	if self.state ~= STATE.PATROL then return end
+
+	local anim_id
+	if self.patrol_state == "IDLE" then
+		anim_id = "idle"
+	elseif self.patrol_state == "PATROL" then
+		local dx = self.patrol_dir_x or 0
+		local dy = self.patrol_dir_y or 0
+		-- Priorizar eje dominante (misma convención que npc.script):
+		-- dy > 0 → walk_top, dy < 0 → walk_down
+		if math.abs(dx) >= math.abs(dy) then
+			anim_id = (dx > 0) and "walk_right" or "walk_left"
+		else
+			anim_id = (dy > 0) and "walk_top" or "walk_down"
+		end
+	end
+
+	if anim_id then
+		play_anim(self, anim_id)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎨 VISIBILIDAD Y SPRITE
+-- ═══════════════════════════════════════════════════════
+
+function set_visible(self, visible)
+	if visible then
+		msg.post("#sprite", "enable")
+	else
+		msg.post("#sprite", "disable")
+	end
+end
+
+function highlight_sprite(self, highlight)
+	if not go.exists(self.sprite_url) then return end
+	local target_color = highlight and vmath.vector4(1.3, 1.3, 1.2, 1.0) or vmath.vector4(1.0, 1.0, 1.0, 1.0)
+	go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, target_color, go.EASING_OUTCUBIC, 0.12)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧹 LIMPIEZA
+-- ═══════════════════════════════════════════════════════
+
+function final(self)
+	-- El gato se destruye, no hay limpieza especial necesaria
+end

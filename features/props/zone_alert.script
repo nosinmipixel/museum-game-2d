@@ -1,0 +1,94 @@
+-- features/props/zone_alert.script
+-- ═══════════════════════════════════════════════════════
+-- 📍 AVISO DE ZONA / SALA (text_alert)
+-- ═══════════════════════════════════════════════════════
+--
+--   Cuando el jugador ENTRA en la zona (collision trigger), muestra en
+--   text_alert (HUD) el nombre localizado de la sala/estancia desde
+--   general_text_[lan].lua → M.locations.
+--
+--   La clave de la sala se auto-detecta desde el id del GO (patrón de
+--   auto-detección por naming): "zone_intake" → "room_intake". Así el
+--   script es reutilizable para cualquier zona futura sin tocar código:
+--   basta nombrar el GO "zone_<sala>" y tener la clave "room_<sala>" en
+--   las tablas de textos.
+--
+--   Detección por collision trigger (GOTCHA #5: trigger↔kinematic →
+--   trigger_response con other_group, nunca "group").
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-18
+-- ═══════════════════════════════════════════════════════
+
+local text_loader = require "main.text_loader"
+local game_state = require "main.game_state"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
+local DEBUG_ZONE_ALERT = false
+local dprint = config.make_log(DEBUG_ZONE_ALERT)
+
+local HUD_URL = "/gui#hud"
+
+-- ═══════════════════════════════════════════════════════
+-- 🌐 CARGA DEL NOMBRE LOCALIZADO DE LA SALA
+-- ═══════════════════════════════════════════════════════
+
+-- 🌐 Recarga el nombre de la sala (text_alert). Definida ANTES de init para
+--    que init y el callback de idioma la capturen como upvalue (GOTCHA #1).
+local function load_room_name(self)
+	local general_texts = text_loader.load("general") or {}
+	local locations = general_texts.locations or {}
+	self.room_name = locations[self.room_key] or self.room_key
+	dprint("[ZoneAlert] '" .. self.room_key .. "' → '" .. tostring(self.room_name) .. "'")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🧠 INICIALIZACIÓN
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	-- La clave de la sala se auto-detecta desde el id del GO:
+	-- zone_intake → room_intake (debe existir en M.locations).
+	local id_raw = tostring(go.get_id())
+	local clean = id_raw:match("%s*%[%s*(.-)%s*%]") or id_raw
+	local full_name = clean:match("([^/]+)$") or "zone_intake"
+	self.room_key = "room_" .. (full_name:match("^zone_(.+)$") or full_name)
+
+	load_room_name(self)
+
+	-- 🌐 Recargar el nombre si el idioma cambia en caliente
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		load_room_name(self)
+		dprint("[ZoneAlert] Nombre recargado por cambio de idioma a: " .. tostring(new_lang))
+	end)
+
+	dprint("[ZoneAlert] Zona '" .. full_name .. "' inicializada (aviso de sala)")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📡 DETECCIÓN POR COLISIÓN (TRIGGER)
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("trigger_response") then
+		-- Solo nos interesan los eventos del jugador.
+		-- GOTCHA #5: entre trigger y kinematic el engine envía
+		-- trigger_response con other_group (nunca "group").
+		-- El collider del jugador que solapa las zonas es
+		-- collisionobject_sound (group "player_sound", mask "zone_ambient")
+		-- en player.go; se acepta también "player" por defensa en profundidad.
+		if message.other_group ~= hash("player") and message.other_group ~= hash("player_sound") then
+			return
+		end
+
+		if message.enter then
+			-- 🟢 Jugador entró en la zona → aviso transitorio con el nombre
+			--    de la sala (show_alert: se oculta solo a los 3s, no bloquea
+			--    el resto de alertas del HUD).
+			dprint("[ZoneAlert] 🟢 Jugador ENTRA en zona '" .. self.room_key .. "'")
+			msg.post(HUD_URL, "show_alert", { text = self.room_name })
+		end
+	end
+end

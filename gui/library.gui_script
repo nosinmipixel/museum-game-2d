@@ -1,0 +1,950 @@
+-- gui/library.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 📖 SISTEMA DE LECTURA DE LIBROS (GUI)
+-- ═══════════════════════════════════════════════════════
+--
+--   Mostramos una maqueta de libro abierto centrada en
+--   pantalla con dos páginas (izquierda + derecha), un
+--   título, flechas de navegación y un botón de cierre.
+--
+--   Alojado en bootstrap (fuera del proxy de level_01) para
+--   que las animaciones GUI (flipbooks, hover) funcionen con
+--   el time-step del motor principal, independientemente de
+--   la pausa del nivel. Al abrir el libro se envía pause_game
+--   a scene_manager, que congela level_01 vía set_time_step.
+--
+-- CORRECCIONES APLICADAS:
+--   [FIX A] MAX_CHARS_PER_PAGE = 240 para respetar el límite interno
+--           de ~256 caracteres de Defold en nodos de texto distance field.
+--   [FIX B] FIT_HEIGHT_RATIO bajado de 0.95 → 0.88 y CHUNK_FILL_RATIO
+--           de 0.85 → 0.80 para más margen visual.
+--   [FIX C] paginate_columns: condición cambiada de > a >= para que
+--           párrafos de altura exacta pasen por el chunking.
+--   [FIX D] snap_to_clause_end: cota mínima de retroceso al 60%
+--           del chunk para evitar chunks de 1 palabra.
+--   [FIX E] split_paragraph_into_chunks: condición de progreso basada
+--           en longitud (#rest >= #remaining) en lugar de strings.
+--   [FIX F] Verificación de integridad con fallback activo (1 página
+--           con todo el contenido en caso de pérdida de palabras).
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local text_loader = require "main.text_loader"
+local gui_touch = require "main.gui_touch"  -- 📱 GOTCHA #13: diana táctil ampliada
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_LIBRARY = false
+local dprint = config.make_log(DEBUG_LIBRARY)
+
+-- ═══════════════════════════════════════════════════════
+-- 📐 CONFIG
+-- ═══════════════════════════════════════════════════════
+local PARAGRAPH_SEPARATOR = "\n\n"
+
+-- Fracción de la altura del nodo (1800 uu) que se usa como
+-- límite de página. El 3% restante actúa de margen visual.
+-- Subido de 0.94 → 0.97 para aprovechar mejor el espacio.
+local FIT_HEIGHT_RATIO = 0.97
+
+-- Target interno de la búsqueda binaria: cuánto del fit_height
+-- queremos rellenar como máximo en cada chunk.
+-- Subido de 0.90 → 0.95 para aprovechar mejor el espacio.
+local CHUNK_FILL_RATIO = 0.95
+
+-- Número máximo de palabras hacia atrás que snap_to_clause_end
+-- intentará retroceder para cortar en un signo de puntuación.
+-- Reducido de 15 → 6 para no encoger tanto los chunks.
+local CHUNK_SNAP_LOOKBACK = 6
+
+-- Límite de caracteres por nodo de texto (distance field font).
+-- Subido de 245 → 250 con margen de 6 chars bajo ~256.
+local MAX_CHARS_PER_PAGE = 250
+
+-- Animaciones para cada botón (definidas en gui/gui.atlas):
+--   idle:      frame único oscuro (PLAYBACK_NONE, instantáneo)
+--   hover_on:  2 frames off→on  (PLAYBACK_ONCE_FORWARD,  5 fps ≈ 400 ms)
+--   hover_off: 2 frames on→off  (PLAYBACK_ONCE_BACKWARD, 5 fps ≈ 400 ms)
+-- Al estar la GUI en bootstrap, las animaciones multi-frame
+-- se reproducen con el time-step del motor principal.
+local BTN_ANIMS = {
+	backward = { idle = hash("btn_backward_idle"), hover_on = hash("btn_backward_hover_on"), hover_off = hash("btn_backward_hover_off") },
+	forward  = { idle = hash("btn_forward_idle"),  hover_on = hash("btn_forward_hover_on"),  hover_off = hash("btn_forward_hover_off") },
+	close    = { idle = hash("btn_close_idle"),    hover_on = hash("btn_close_hover_on"),    hover_off = hash("btn_close_hover_off") },
+}
+
+-- Animación de apertura del libro (gui.atlas > book_appaerance):
+--   usa los frames book_appearance_01..06 (los book_open_N están deprecated).
+--   El último frame (book_appearance_06) es idéntico al frame idle del
+--   libro abierto (book_open_01), así que al terminar el libro queda en
+--   su estado abierto sin necesidad de volver a book_idle explícitamente.
+local ANIM_BOOK_APPEARANCE = hash("book_appaerance")
+
+-- URL del gestor de pausa (siempre en bootstrap).
+-- La pausa del proxy level_01 ya congela física, updates y movimiento
+-- del jugador, así que no hace falta pausar al player por separado.
+local SCENE_MANAGER_URL = "bootstrap:/main_loader#scene_manager"
+local AUDIO_MANAGER_URL = "bootstrap:/audio_manager#manager"
+-- 📱 Controles táctiles (web_controls, render order 5 > 3): se ocultan
+--    mientras se lee el libro (no aplican y flotarían encima de la GUI).
+local WEB_CONTROLS_URL = "bootstrap:/gui_web_controls#web_controls"
+
+-- ═══════════════════════════════════════════════════════
+-- 🔧 DECLARACIONES ADELANTADAS
+-- ═══════════════════════════════════════════════════════
+local set_visible_all
+local hide_library
+local handle_input
+local display_page
+local pause_game_world
+local resume_game_world
+
+-- ═══════════════════════════════════════════════════════
+-- 🧩 AUXILIARES
+-- ═══════════════════════════════════════════════════════
+
+local function normalize_newlines(text)
+	if not text then return "" end
+	return text:gsub("\r\n", "\n"):gsub("\r", "\n")
+end
+
+local function trim(s)
+	if not s then return "" end
+	return s:match("^%s*(.-)%s*$") or ""
+end
+
+local function preview(text, len)
+	if not text or text == "" then return "(vacío)" end
+	return text:gsub("\n", " "):sub(1, len or 50)
+end
+
+local function split_paragraphs(text)
+	text = normalize_newlines(text)
+	if text == "" then return {} end
+
+	local paragraphs = {}
+	local buffer = {}
+
+	local function flush()
+		if #buffer == 0 then return end
+		local para = trim(table.concat(buffer, "\n"))
+		if para ~= "" then
+			table.insert(paragraphs, para)
+		end
+		buffer = {}
+	end
+
+	for line in (text .. "\n"):gmatch("(.-)\n") do
+		if line:match("^%s*$") then
+			flush()
+		else
+			table.insert(buffer, line)
+		end
+	end
+
+	flush()
+	return paragraphs
+end
+
+local function split_words(text)
+	local words = {}
+	for word in tostring(text):gmatch("%S+") do
+		table.insert(words, word)
+	end
+	return words
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📏 MEDICIÓN
+-- ═══════════════════════════════════════════════════════
+
+local function init_layout(self)
+	local font_name = gui.get_font(self.text_page_left)
+	self.font_resource = gui.get_font_resource(font_name)
+
+	-- El nodo de texto tiene size=1200×1800 definido en el .gui.
+	-- Defold maqueta el texto dentro de estas dimensiones LÓGICAS
+	-- usando la fuente a su tamaño nativo (80px). La escala 0.2 se
+	-- aplica DESPUÉS como transformación visual sobre el resultado
+	-- ya maquetado. Por eso resource.get_text_metrics() debe recibir
+	-- el ancho lógico (1200), no el escalado (240) — el line-wrap
+	-- del motor trabaja sobre el área lógica, igual que get_text_metrics.
+	local node_size = gui.get_size(self.text_page_left)
+
+	self.column_width  = node_size.x
+	self.column_height = node_size.y
+
+	-- fit_height: espacio útil de texto dentro de la columna.
+	-- FIT_HEIGHT_RATIO deja margen para que el texto no llegue al
+	-- borde del sprite del libro.
+	self.fit_height = math.floor(self.column_height * FIT_HEIGHT_RATIO)
+
+	dprint(string.format(
+	"[Library] Layout — nodo: %dx%d uu | fit_h: %d px (%.0f%%)",
+	node_size.x, node_size.y,
+	self.fit_height, FIT_HEIGHT_RATIO * 100
+))
+end
+
+-- Mide la altura del texto usando el ancho lógico del nodo
+-- (column_width = 1200), que es el mismo ancho contra el que el
+-- motor aplica line-wrap al renderizar. La escala visual del nodo
+-- (0.2) no afecta al layout del texto, solo al escalado posterior.
+local function measure_height(self, text, width)
+if not text or text == "" then return 0 end
+
+local metrics = resource.get_text_metrics(self.font_resource, text, {
+	width      = width,
+	line_break = true,
+})
+
+return metrics.height
+end-- Cota mínima de retroceso: no retrocedemos más allá del 60%
+-- del índice best para garantizar que el chunk tenga al menos
+-- ese porcentaje. Evita chunks de 1-2 palabras con listas
+-- numeradas ("1.", "Art.") o abreviaturas que el patrón de
+-- puntuación detectaría como fin de frase.
+local function snap_to_clause_end(words, from_best, lookback)
+if not words or from_best <= 0 then
+	return from_best
+end
+
+-- Cota mínima: no retroceder más del 25% del chunk
+-- (subida de 40% → 25% para chunks más densos).
+local min_floor = math.max(1, math.floor(from_best * 0.75))
+local floor     = math.max(min_floor, from_best - lookback)
+
+-- 1ª pasada: fin de frase (`. ! ?`) — preferido.
+for i = from_best, floor, -1 do
+	local w = words[i]
+	if w and w:match("[%.%!%?]$") then
+		return i
+	end
+end
+
+-- 2ª pasada: marcadores de cláusula (`, ; :`) — solo si no
+-- encontramos fin de frase dentro del lookback.
+for i = from_best, floor, -1 do
+	local w = words[i]
+	if w and w:match("[%,%;%:]$") then
+		return i
+	end
+end
+
+return from_best
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ✂️ PARTIR TEXTO
+-- ═══════════════════════════════════════════════════════
+
+local function split_paragraph_to_fit(self, paragraph, width, max_height, max_chars)
+	max_chars = max_chars or MAX_CHARS_PER_PAGE
+
+if not paragraph or paragraph == "" then
+	return "", ""
+end
+
+-- Si el texto cabe en altura Y no supera el límite de caracteres,
+-- devolverlo completo. Si solo cabe en altura pero excede el límite
+-- de caracteres, pasar a la búsqueda binaria que sí lo respeta.
+if measure_height(self, paragraph, width) <= max_height
+and #paragraph <= max_chars then
+	return paragraph, ""
+end
+
+local words = split_words(paragraph)
+if #words == 0 then return "", "" end
+
+local target = math.floor(max_height * CHUNK_FILL_RATIO)
+
+local low, high = 1, #words
+local best = 0
+
+while low <= high do
+	local mid       = math.floor((low + high) / 2)
+	local candidate = table.concat(words, " ", 1, mid)
+	local h         = measure_height(self, candidate, width)
+
+	local candidate_chars = #candidate
+
+	if h <= target and candidate_chars <= max_chars then
+		best = mid
+		low  = mid + 1
+	else
+		high = mid - 1
+	end
+end
+
+if best <= 0 then best = 1 end
+
+best = snap_to_clause_end(words, best, CHUNK_SNAP_LOOKBACK)
+
+local fitted = table.concat(words, " ", 1, best)
+-- Protección: no exceder max_chars (puede pasar con rem_chars muy pequeño)
+if #fitted > max_chars then
+	return "", paragraph
+end
+local rest   = (best < #words) and table.concat(words, " ", best + 1) or ""
+
+return trim(fitted), trim(rest)
+end
+
+local function split_paragraph_into_chunks(self, paragraph, width, max_height)
+local chunks    = {}
+local remaining = paragraph	-- Rastreamos la longitud anterior para detectar falta de
+	-- progreso real sin depender de comparación de strings.
+	local prev_len  = -1
+	local guard     = 0
+
+	while remaining ~= "" do
+		guard = guard + 1
+
+		-- Doble condición de salida: límite de iteraciones O
+		-- ausencia de progreso en longitud (prev_len == #remaining).
+		if guard > 500 or #remaining == prev_len then
+			table.insert(chunks, remaining)
+			break
+		end
+
+		prev_len = #remaining
+
+		-- Si el resto cabe en altura Y no supera el límite de
+		-- caracteres, lo añadimos como chunk completo. Si supera
+		-- el límite de caracteres (aunque quepa en altura), pasamos
+		-- a split_paragraph_to_fit que sí respeta MAX_CHARS_PER_PAGE.
+		if measure_height(self, remaining, width) <= max_height
+		and #remaining <= MAX_CHARS_PER_PAGE then
+			table.insert(chunks, remaining)
+			break
+		end
+
+		local fitted, rest = split_paragraph_to_fit(self, remaining, width, max_height)
+
+		if fitted == "" then
+			-- No se pudo partir: volcamos el resto y salimos.
+			table.insert(chunks, remaining)
+			break
+		end
+
+		table.insert(chunks, fitted)
+
+		-- Comparamos longitudes en lugar de strings para detectar
+		-- si hay progreso real. Si rest es tan largo como remaining,
+		-- no hay avance y salimos para evitar bucle infinito.
+		if rest == "" or #rest >= #remaining then
+			if rest ~= "" then
+				table.insert(chunks, rest)
+			end
+			break
+		end
+
+		remaining = rest
+	end
+
+return chunks
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📚 PAGINACIÓN
+-- ═══════════════════════════════════════════════════════
+
+local function paginate_columns(self, content)
+local col_w = self.column_width
+local fit_h = self.fit_height
+
+local paragraphs = split_paragraphs(content)
+
+dprint(string.format("[DEBUG] Paginando: %d párrafos | col_w=%.0f | fit_h=%d",
+#paragraphs, col_w, fit_h))
+for i, p in ipairs(paragraphs) do
+	local h = measure_height(self, p, col_w)
+	dprint(string.format("[DEBUG]   ¶%d: h=%.0f/%d | %d chars | %s",
+	i, h, fit_h, #p, preview(p, 60)))
+end
+
+if #paragraphs == 0 then
+	return {{ text = content or "", info = "empty" }}
+end
+
+local pages    = {}
+local cur_text = ""
+local cur_paras = {}
+
+local function flush()
+	if cur_text ~= "" then
+		table.insert(pages, {
+			text = cur_text,
+			info = "¶" .. table.concat(cur_paras, ",")
+		})
+		cur_text  = ""
+		cur_paras = {}
+	end
+end
+
+for p_idx, para in ipairs(paragraphs) do
+	local para_h = measure_height(self, para, col_w)
+
+	-- Si el párrafo mide igual o más que fit_h, o si supera el
+	-- límite de caracteres por página, hacer chunking.
+	-- El límite de caracteres es necesario porque Defold tiene un
+	-- límite interno de ~256 caracteres por nodo de texto distance
+	-- field; los caracteres sobrantes no se renderizan.
+	if para_h >= fit_h or #para >= MAX_CHARS_PER_PAGE then
+		local needs_full_chunk = true
+
+		-- Intentar rellenar la página actual antes de hacer flush
+		if cur_text ~= "" then
+			local cur_h = measure_height(self, cur_text .. PARAGRAPH_SEPARATOR, col_w)
+			local rem_h = fit_h - cur_h
+			local rem_chars = MAX_CHARS_PER_PAGE - #cur_text - #PARAGRAPH_SEPARATOR
+
+			if rem_h > 0 and rem_chars > 0 then
+				-- Dividir entre CHUNK_FILL_RATIO para que el filler use
+				-- el 100% del espacio remanente (evita doble margen)
+				local filler, rest = split_paragraph_to_fit(self, para, col_w,
+					rem_h / CHUNK_FILL_RATIO, rem_chars)
+				if filler ~= "" then
+					-- Mezclar filler con la página actual
+					cur_text = cur_text .. PARAGRAPH_SEPARATOR .. filler
+					table.insert(cur_paras, tostring(p_idx))
+					flush()
+
+					if rest == "" then
+						-- Párrafo consumido completamente
+						needs_full_chunk = false
+					else
+						local rest_h = measure_height(self, rest, col_w)
+						if rest_h < fit_h and #rest < MAX_CHARS_PER_PAGE then
+							-- El resto cabe en una sola página
+							cur_text = rest
+							cur_paras = { tostring(p_idx) }
+							needs_full_chunk = false
+						else
+							-- El resto todavía necesita chunking
+							para = rest
+							para_h = rest_h
+						end
+					end
+				end
+			end
+		end
+
+		if needs_full_chunk then
+			flush()
+
+			local chunks = split_paragraph_into_chunks(self, para, col_w, fit_h)
+			for c_idx, chunk in ipairs(chunks) do
+				local suffix = (#chunks > 1)
+				and string.format("(%d/%d)", c_idx, #chunks)
+				or  ""
+				table.insert(pages, {
+					text = chunk,
+					info = "¶" .. p_idx .. suffix,
+				})
+			end
+		end
+	else
+		local candidate
+		if cur_text == "" then
+			candidate = para
+		else
+			candidate = cur_text .. PARAGRAPH_SEPARATOR .. para
+		end
+
+		local candidate_h = measure_height(self, candidate, col_w)
+
+		-- Combinamos párrafos solo si caben en altura Y no superan
+		-- el límite de caracteres por página (límite interno de
+		-- Defold para distance field fonts).
+		if candidate_h <= fit_h and #candidate <= MAX_CHARS_PER_PAGE then
+			cur_text = candidate
+			table.insert(cur_paras, tostring(p_idx))
+		else
+			flush()
+			cur_text  = para
+			cur_paras = { tostring(p_idx) }
+		end
+	end
+end
+
+flush()
+
+if #pages == 0 then
+	table.insert(pages, { text = "", info = "empty" })
+end	-- ── Verificación de integridad ──────────────────────────────
+	-- Si se detecta pérdida de palabras, activamos un fallback que
+	-- muestra todo el contenido en una sola página, evitando que el
+	-- jugador lea un libro incompleto sin saberlo.
+	local original_words  = split_words(normalize_newlines(content))
+	local paginated_words = {}
+	for _, page in ipairs(pages) do
+		for _, w in ipairs(split_words(page.text)) do
+			table.insert(paginated_words, w)
+		end
+	end
+
+	if #original_words == #paginated_words then
+		dprint(string.format("✅ [Library] Integridad OK: %d palabras en %d páginas",
+		#original_words, #pages))
+	else
+		dprint(string.format(
+		"⚠️  [Library] INTEGRIDAD ROTA: original=%d palabras, paginado=%d — activando fallback",
+		#original_words, #paginated_words
+	))
+	-- Fallback: una sola página con todo el contenido. El texto
+	-- desbordará visualmente, pero al menos ningún contenido se
+	-- pierde de forma silenciosa.
+	pages = {{ text = content, info = "fallback" }}
+	end
+
+dprint(string.format("[DEBUG] %d páginas generadas:", #pages))
+for i, page in ipairs(pages) do
+local h = measure_height(self, page.text, col_w)
+dprint(string.format(
+"[DEBUG]   Pág %d [%s]: h=%.0f/%d | %d chars | %s",
+i, page.info, h, fit_h, #page.text, preview(page.text, 70)
+))
+end
+
+return pages
+end
+
+local function build_spreads(self, content)
+local pages   = paginate_columns(self, content)
+local spreads = {}
+local idx     = 1
+
+while idx <= #pages do
+local lt = pages[idx].text
+local li = pages[idx].info
+local rt = ""
+local ri = "empty"
+
+if idx + 1 <= #pages then
+rt = pages[idx + 1].text
+ri = pages[idx + 1].info
+end
+
+table.insert(spreads, {
+left_text  = lt,
+right_text = rt,
+left_info  = li,
+right_info = ri,
+})
+
+idx = idx + 2
+end
+
+dprint(string.format("[DEBUG] %d spreads:", #spreads))
+for i, sp in ipairs(spreads) do
+dprint(string.format(
+"[DEBUG]   Spread %d | L[%s] %d chars | R[%s] %d chars",
+i, sp.left_info, #sp.left_text, sp.right_info, #sp.right_text
+))
+end
+
+return spreads
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📄 MOSTRAR SPREAD
+-- ═══════════════════════════════════════════════════════
+display_page = function(self, page_idx)
+if #self.spreads == 0 then return end
+
+page_idx = math.max(1, math.min(page_idx, #self.spreads))
+self.current_page = page_idx
+
+local sp = self.spreads[page_idx]
+
+dprint(string.format(
+"[Library] → Spread %d/%d | L[%s] %d chars | R[%s] %d chars",
+page_idx, #self.spreads,
+sp.left_info,  #sp.left_text,
+sp.right_info, #sp.right_text
+))
+
+gui.set_text(self.text_page_left,  sp.left_text)
+gui.set_text(self.text_page_right, sp.right_text)
+
+gui.set_enabled(self.box_backward, page_idx > 1)
+gui.set_enabled(self.box_forward,  page_idx < #self.spreads)
+
+-- Al cambiar de página, resetear hover states y mostrar frame idle
+-- (para que los botones recién deshabilitados no conserven estado
+-- de hover anterior).
+for id in pairs(self.btn_hover_states) do
+	self.btn_hover_states[id] = false
+end
+for _, btn in ipairs(self.btn_nav) do
+	gui.play_flipbook(btn.node, BTN_ANIMS[btn.id].idle)
+end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 INIT
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+-- 🎨 Orden de render global de las GUI (mayor = encima):
+-- pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+gui.set_render_order(3)
+
+self.box_book        = gui.get_node("box_book")
+self.box_pages_flip  = gui.get_node("box_pages_flip")
+self.text_title      = gui.get_node("text_title")
+self.text_page_left  = gui.get_node("text_page_left")
+self.text_page_right = gui.get_node("text_page_right")
+self.box_backward    = gui.get_node("box_backward")
+self.box_forward     = gui.get_node("box_forward")
+self.box_close       = gui.get_node("box_close")
+self.box_background  = gui.get_node("box_background")
+
+-- Lista de botones navegables con hover
+self.btn_nav = {
+	{ node = self.box_backward, id = "backward" },
+	{ node = self.box_forward,  id = "forward" },
+	{ node = self.box_close,    id = "close" },
+}
+self.btn_hover_states = {
+	backward = false,
+	forward  = false,
+	close    = false,
+}
+
+self.can_open     = false  -- solo true en level_01 (lo setea scene_manager)
+self.is_visible   = false
+self.books_data   = {}
+self.spreads      = {}
+self.current_page = 0
+self.current_book = nil
+self.is_paused    = false
+self._navigating  = false  -- bloquea doble navegación durante animación de paso de página
+
+local lang = text_loader.get_current_lang()
+self.books_data = text_loader.load("books", lang)
+
+-- Recargar textos si el idioma cambia en caliente
+local game_state = require "main.game_state"
+game_state.register_callback("language", function(var_name, old_lang, new_lang)
+	self.books_data = text_loader.reload("books", new_lang)
+	dprint("[Library] Textos recargados por cambio de idioma a: " .. tostring(new_lang))
+end)
+
+if not self.books_data or #self.books_data == 0 then
+dprint("ERROR [Library] No se pudieron cargar los libros")
+self.books_data = {}
+else
+dprint(string.format("[Library] %d libros cargados", #self.books_data))
+end
+
+init_layout(self)
+
+-- Activar line_break: ya viene definido en el .gui pero lo
+-- aseguramos por si el script se importa en otra plantilla.
+gui.set_line_break(self.text_page_left,  true)
+gui.set_line_break(self.text_page_right, true)
+
+set_visible_all(self, false)
+
+-- box_pages_flip es un overlay temporal para la animación de paso
+-- de página. Se muestra solo durante la animación, no al abrir el libro.
+gui.set_enabled(self.box_pages_flip, false)
+
+-- Adquirir foco de entrada al iniciar (igual que pause.gui_script).
+-- IMPORTANTE: library.gui y pause.gui comparten el game object
+-- gui_library en bootstrap. Si library libera su focus vía
+-- release_input_focus, pause también pierde su focus porque
+-- el mensaje "./release_input_focus" se envía al game object
+-- completo. Por eso mantenemos el focus permanentemente:
+-- on_input ya descarta todo input cuando is_visible == false.
+msg.post(".", "acquire_input_focus")
+end
+
+set_visible_all = function(self, visible)
+if visible then
+	for id in pairs(self.btn_hover_states) do
+		self.btn_hover_states[id] = false
+	end
+	-- Mostrar frame idle (oscuro) en todos los botones al abrir el libro
+	for _, btn in ipairs(self.btn_nav) do
+		gui.play_flipbook(btn.node, BTN_ANIMS[btn.id].idle)
+	end
+
+	-- 📱 GOTCHA #13: diana táctil ampliada (flechas 64×64 → ~1.4×, cierre
+	-- 48×48 → ~1.8×). Se calcula al ABRIR el libro (no en init) para que la
+	-- detección de plataforma (platform.detect, bootstrap) ya esté resuelta.
+	-- PC → total_scale devuelve 1.0 → se conserva la escala del editor.
+	-- El hover de estos botones es por FLIPBOOK (sin escala) → sin conflicto.
+	for _, btn in ipairs(self.btn_nav) do
+		local s = gui_touch.total_scale(gui.get_size(btn.node).y)
+		if s ~= 1 then
+			gui.set_scale(btn.node, vmath.vector3(s, s, 1))
+		end
+	end
+end
+
+gui.set_enabled(self.box_background,  visible)
+gui.set_enabled(self.box_book,        visible)
+gui.set_enabled(self.text_title,      visible)
+gui.set_enabled(self.text_page_left,  visible)
+gui.set_enabled(self.text_page_right, visible)
+gui.set_enabled(self.box_backward,    visible)
+gui.set_enabled(self.box_forward,     visible)
+gui.set_enabled(self.box_close,       visible)
+
+-- box_pages_flip es un overlay temporal: solo se muestra durante
+-- la animación de paso de página, no al abrir/cerrar el libro.
+if not visible then
+	gui.set_enabled(self.box_pages_flip, false)
+end
+
+self.is_visible = visible
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ INPUT
+-- ═══════════════════════════════════════════════════════
+
+handle_input = function(self, action_id, action)
+if not self.is_visible then return end
+
+-- ═══════════════════════════════════════════════════════
+-- 🖱️ HOVER (action_id == nil para movimientos del ratón)
+-- ═══════════════════════════════════════════════════════
+if action_id == nil then
+	for _, btn in ipairs(self.btn_nav) do
+		-- ⚠️ GOTCHA #10: gui.pick_node es geométrico y pickea nodos
+		--    DESHABILITADOS (box_backward/box_forward en los bordes).
+		--    Comprobar is_enabled antes de animar el hover.
+		local hovering = gui.is_enabled(btn.node) and gui.pick_node(btn.node, action.x, action.y)
+		if hovering ~= self.btn_hover_states[btn.id] then
+			self.btn_hover_states[btn.id] = hovering
+			if hovering then
+				gui.play_flipbook(btn.node, BTN_ANIMS[btn.id].hover_on)
+			else
+				gui.play_flipbook(btn.node, BTN_ANIMS[btn.id].hover_off)
+			end
+		end
+	end
+	return
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 👆 CLIC
+-- ═══════════════════════════════════════════════════════
+if not (action_id == hash("touch") or action_id == hash("click")) then return end
+if not action.pressed then return end
+
+-- Debounce: prevenir doble procesamiento (on_input + on_message)
+local now = os.clock()
+if self._last_input_time and (now - self._last_input_time) < 0.01 then
+return
+end
+self._last_input_time = now
+
+if gui.pick_node(self.box_close, action.x, action.y) then
+hide_library(self)
+return
+end
+
+if self.current_page > 1
+and gui.pick_node(self.box_backward, action.x, action.y) then	if self._navigating then return end
+	self._navigating = true
+
+	-- 🔊 Sonido de paso de página
+	sound.play("main_loader#page_turn")
+
+	-- Overlay de paso de página (4 frames @ 5 fps ≈ 0.8 s).
+	-- Se superpone sobre box_book, ocultando el texto real
+	-- durante la animación.
+	gui.set_enabled(self.box_pages_flip, true)
+	gui.play_flipbook(self.box_pages_flip, hash("book_page_backward"), function(scr, node)
+	if not scr.is_visible then
+	scr._navigating = false
+	return
+	end
+	display_page(scr, scr.current_page - 1)
+	gui.set_enabled(scr.box_pages_flip, false)
+	scr._navigating = false
+	end)
+	return
+	end
+
+	if self.current_page < #self.spreads
+and gui.pick_node(self.box_forward, action.x, action.y) then	if self._navigating then return end
+	self._navigating = true
+
+	-- 🔊 Sonido de paso de página
+	sound.play("main_loader#page_turn")
+
+	-- Overlay de paso de página (4 frames @ 5 fps ≈ 0.8 s).
+	-- Se superpone sobre box_book, ocultando el texto real
+	-- durante la animación.
+	gui.set_enabled(self.box_pages_flip, true)
+	gui.play_flipbook(self.box_pages_flip, hash("book_page_forward"), function(scr, node)
+	if not scr.is_visible then
+	scr._navigating = false
+	return
+	end
+	display_page(scr, scr.current_page + 1)
+	gui.set_enabled(scr.box_pages_flip, false)
+	scr._navigating = false
+	end)
+	return
+	end
+end
+
+function on_input(self, action_id, action)
+	handle_input(self, action_id, action)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📨 MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+-- scene_manager notifica cuando se puede abrir el libro
+if message_id == hash("set_pause_enabled") then
+	self.can_open = message.enabled
+	-- Si se deshabilita mientras el libro está abierto, cerrarlo
+	if not message.enabled and self.is_visible then
+		hide_library(self)
+	end
+	return
+end
+
+if message_id == hash("show_book") then
+	if not self.can_open then
+		dprint("[Library] show_book ignorado: no se puede abrir en esta escena")
+		return
+	end
+
+local book_type = message.book_type
+if not book_type then
+dprint("ERROR [Library] show_book sin book_type")
+return
+end
+
+local type_str = tostring(book_type)
+local book     = nil
+for _, b in ipairs(self.books_data) do
+if tostring(b.book_type) == type_str then
+book = b
+break
+end
+end
+
+if not book then
+dprint("ERROR [Library] No se encontró libro: " .. type_str)
+return
+end
+
+self.current_book = book
+dprint("[Library] Mostrando libro: " .. book.title)	-- 1) Congelar el mundo antes de enseñar la GUI.
+pause_game_world(self)	-- 🎵 Evento de audio: lectura de libro (fondo de biblioteca en bucle
+	--    hasta cerrar; el gestor lo detiene en hide_library).
+msg.post(AUDIO_MANAGER_URL, "play_event", { id = "library" })	-- 2) Mostrar la GUI.
+	set_visible_all(self, true)
+
+	-- 📱 Ocultar los controles táctiles mientras se lee el libro
+	-- (web_controls render order 5 > 3: flotarían encima y no aplican).
+	msg.post(WEB_CONTROLS_URL, "library_state", { active = true })
+	gui.set_text(self.text_title, book.title)
+	gui.set_alpha(self.box_book, 1.0)
+
+	-- 🔊 Sonido + animación inicial de apertura del libro.
+	sound.play("main_loader#book_open")
+
+	-- Los textos del libro permanecen ocultos durante la animación de
+	-- apertura; se muestran en el callback cuando esta termina.
+	gui.set_enabled(self.text_title,      false)
+	gui.set_enabled(self.text_page_left,  false)
+	gui.set_enabled(self.text_page_right, false)
+
+-- 3) Paginar el contenido (se muestra en el callback tras la apertura).
+self.spreads      = build_spreads(self, book.content)
+self.current_page = 0
+
+	gui.play_flipbook(self.box_book, ANIM_BOOK_APPEARANCE, function(scr, node)
+		if not scr.is_visible then
+			return
+		end
+		-- Al terminar la apertura, mostrar los textos y la primera página.
+		gui.set_enabled(scr.text_title,      true)
+		gui.set_enabled(scr.text_page_left,  true)
+		gui.set_enabled(scr.text_page_right, true)
+		display_page(scr, 1)
+	end)
+
+	-- box_book queda en su frame final (libro abierto); la animación de paso
+	-- de página la gestiona box_pages_flip (overlay superpuesto).
+
+-- 4) El foco de input ya está adquirido desde init().
+-- No es necesario re-adquirir aquí.
+
+elseif message_id == hash("hide_book") then
+hide_library(self)
+end
+end
+
+
+-- ═══════════════════════════════════════════════════════
+-- 🔒 CIERRE / PAUSA / REANUDACIÓN
+-- ═══════════════════════════════════════════════════════
+
+pause_game_world = function(self)
+if self.is_paused then return end
+self.is_paused = true
+
+msg.post(SCENE_MANAGER_URL, "pause_game")
+-- La pausa del proxy (set_time_step factor=0) ya congela física,
+-- updates y movimiento del jugador → no hace falta pause_movement.
+
+dprint("[Library] ⏸  Solicita pausa del juego")
+end
+
+resume_game_world = function(self)
+if not self.is_paused then return end
+self.is_paused = false
+
+msg.post(SCENE_MANAGER_URL, "resume_game")
+
+dprint("[Library] ▶  Solicita reanudación del juego")
+end
+
+hide_library = function(self)
+-- Cancelar cualquier navegación en curso (el callback del flipbook
+-- no se ejecutará porque set_visible_all deshabilita los nodos y
+-- eso interrumpe la animación, pero limpiamos el flag por seguridad).
+self._navigating = false
+set_visible_all(self, false)
+-- NO liberamos input focus aquí: library.gui y pause.gui comparten
+-- el game object gui_library. Liberar el focus de library también
+-- libera el de pause, rompiendo la tecla P. El on_input ya descarta
+-- todo input cuando is_visible == false, así que no hay conflicto.
+resume_game_world(self)
+-- 📱 Restaurar los controles táctiles al cerrar el libro.
+msg.post(WEB_CONTROLS_URL, "library_state", { active = false })
+-- 🎵 Fin del evento de audio de lectura de libro.
+msg.post(AUDIO_MANAGER_URL, "stop_event", { id = "library" })
+dprint("[Library] Interfaz cerrada")
+end
+
+function final(self)
+msg.post(".", "release_input_focus")
+if self.is_paused then
+resume_game_world(self)
+-- 📱 Red de seguridad: restaurar los controles táctiles si el GO se
+-- destruye con el libro abierto (evita un estado oculto obsoleto).
+msg.post(WEB_CONTROLS_URL, "library_state", { active = false })
+-- 🎵 Red de seguridad: retirar el sonido de libro de la pila de audio.
+msg.post(AUDIO_MANAGER_URL, "stop_event", { id = "library" })
+end
+end

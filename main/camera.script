@@ -1,0 +1,40 @@
+-- main/camera.script
+-- ═══════════════════════════════════════════════════════
+-- 📷 CÁMARA DE SEGUIMIENTO
+-- ═══════════════════════════════════════════════════════
+--
+--   Cámara que sigue al jugador con interpolación suave
+--   (lerp_factor expuesto en el editor: bajo = muy suave,
+--   alto = rígida). Zero-garbage: vector pre-asignado.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("lerp_factor", 0.07)
+
+function init(self)
+	self.target_url = msg.url("/player")
+	-- Nota: GLOBAL_CAMERA_X/Y fueron eliminadas (no se usaban en ningún otro script)
+	-- 🧮 Vector pre-asignado para update() zero-garbage (regla §1)
+	self.tmp_pos = vmath.vector3()
+end
+
+function update(self, dt)
+	local target_pos = go.get_position(self.target_url)
+	local camera_pos = go.get_position()
+
+	local new_x = camera_pos.x + (target_pos.x - camera_pos.x) * self.lerp_factor
+	local new_y = camera_pos.y + (target_pos.y - camera_pos.y) * self.lerp_factor
+
+	-- Zero-garbage: muta el vector pre-asignado (antes: vmath.vector3() por frame)
+	local pos = self.tmp_pos
+	pos.x = math.floor(new_x)
+	pos.y = math.floor(new_y)
+	pos.z = camera_pos.z
+	go.set_position(pos)
+	-- Nota: ya no se envía "camera_moved" a player_spray — la capa de puntería
+	-- (features/player/aiming.lua) consulta la posición REAL de la cámara en vivo
+	-- vía camera.screen_xy_to_world (patrón cursor.script). El mensaje quedó obsoleto.
+end

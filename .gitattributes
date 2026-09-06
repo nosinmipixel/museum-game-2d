@@ -1,0 +1,88 @@
+# ============================================================================
+# .gitattributes — Proyecto Defold
+#
+# Basado en el .gitattributes oficial de defold/defold-examples
+# (https://github.com/defold/defold-examples) y en las recomendaciones de
+# GitHub Linguist para archivos textproto de Defold:
+# https://github.com/github/linguist/issues/5091
+# ============================================================================
+
+# Normalización de finales de línea: todo el texto se almacena en el repo con
+# LF (recomendación estándar de GitHub para `* text=auto`).
+* text=auto
+
+# ----------------------------------------------------------------------------
+# Código Lua y shaders -> siempre LF explícito
+# ----------------------------------------------------------------------------
+*.lua text eol=lf
+*.script text eol=lf
+*.gui_script text eol=lf
+*.render_script text eol=lf
+*.editor_script text eol=lf
+*.vp text eol=lf
+*.fp text eol=lf
+
+# ----------------------------------------------------------------------------
+# Archivos de proyecto Defold (textproto / JSON-like)
+# Se declaran como JSON5 para que GitHub los muestre y diffee correctamente.
+# Son TEXTO, nunca deben marcarse como binary.
+# ----------------------------------------------------------------------------
+*.animationset linguist-language=JSON5
+*.atlas linguist-language=JSON5
+*.camera linguist-language=JSON5
+*.collection linguist-language=JSON5
+*.collectionfactory linguist-language=JSON5
+*.collectionproxy linguist-language=JSON5
+*.collisionobject linguist-language=JSON5
+*.cubemap linguist-language=JSON5
+*.display_profiles linguist-language=JSON5
+*.factory linguist-language=JSON5
+*.font linguist-language=JSON5
+*.gamepads linguist-language=JSON5
+*.go linguist-language=JSON5
+*.gui linguist-language=JSON5
+*.input_binding linguist-language=JSON5
+*.label linguist-language=JSON5
+*.material linguist-language=JSON5
+*.mesh linguist-language=JSON5
+*.model linguist-language=JSON5
+*.particlefx linguist-language=JSON5
+*.render linguist-language=JSON5
+*.sound linguist-language=JSON5
+*.sprite linguist-language=JSON5
+*.spinemodel linguist-language=JSON5
+*.spinescene linguist-language=JSON5
+*.texture_profiles linguist-language=JSON5
+*.tilemap linguist-language=JSON5
+*.tilesource linguist-language=JSON5
+# game.project
+*.project linguist-language=JSON5
+
+# ----------------------------------------------------------------------------
+# Activos binarios -> nunca tocar finales de línea
+# ----------------------------------------------------------------------------
+# Imágenes
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.tga binary
+*.bmp binary
+*.dds binary
+*.ktx binary
+*.astc binary
+*.xcf binary
+# Audio
+*.ogg binary
+*.wav binary
+*.mp3 binary
+# Fuentes
+*.ttf binary
+*.otf binary
+# Modelos 3D
+*.dae binary
+# Archivos fuente de edición de imagen: .pxo = Pixelorama, .xcf = GIMP
+# (paquetes ZIP / binarios). No se suben a GitHub (ver .gitignore); la regla
+# binary es solo una red de seguridad por si se fuerzan con -f.
+*.pxo binary

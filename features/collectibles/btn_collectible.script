@@ -1,0 +1,84 @@
+-- features/collectibles/btn_collectible.script
+-- ═══════════════════════════════════════════════════════
+-- 👆 BOTÓN DE RECOGIDA DE OBJETO COLECCIONABLE
+-- ═══════════════════════════════════════════════════════
+--
+--   Responsabilidades:
+--     1. Recibir "interact" del cursor → enviar "collectible_clicked"
+--     2. Recibir "set_visible" / "enable_collision" del manager
+--
+--   Es el hijo de collectible_object. Cuando el manager mueve
+--   al padre fuera de cámara, este hijo se mueve con él.
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+local DEBUG_BTN_COLLECTIBLE = false
+local dprint = config.make_log(DEBUG_BTN_COLLECTIBLE)
+
+function init(self)
+	self.collision_enabled = true
+	self.sprite_url = msg.url(nil, nil, "sprite")
+	self.sprite_initial_size = go.get(self.sprite_url, "size")
+end
+
+local function set_hover_state(self, is_hovered)
+	if not go.exists(self.sprite_url) then return end
+	if is_hovered then
+		go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size * 1.2, go.EASING_OUTCUBIC, 0.12)
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.3, 1.3, 1.2, 1.0), go.EASING_OUTCUBIC, 0.12)
+	else
+		go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_OUTCUBIC, 0.12)
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.12)
+	end
+end
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("mouse_hover") then
+		if self.collision_enabled then
+			set_hover_state(self, message.enter)
+		end
+
+	elseif message_id == hash("set_visible") then
+		go.cancel_animations(".", "scale")
+		if message.visible then
+			go.set_scale(vmath.vector3(1, 1, 1))
+			-- Restaurar size y tint del sprite (por si se ocultó durante hover)
+			if go.exists(self.sprite_url) then
+				go.cancel_animations(self.sprite_url, "size")
+				go.cancel_animations(self.sprite_url, "tint")
+				go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_LINEAR, 0.001)
+				go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_LINEAR, 0.001)
+			end
+		else
+			go.set_scale(vmath.vector3(0.001, 0.001, 0.001))
+		end
+
+	elseif message_id == hash("enable_collision") then
+		self.collision_enabled = message.enabled
+		if message.enabled then
+			msg.post("#collisionobject", "enable")
+		else
+			msg.post("#collisionobject", "disable")
+		end
+
+	elseif message_id == hash("interact") then
+		-- Mensaje enviado por cursor.script al colisionar + clic
+		if self.collision_enabled then
+			-- Resetear animaciones del sprite (size + tint) por si se hizo clic durante hover
+			if go.exists(self.sprite_url) then
+				go.cancel_animations(self.sprite_url, "size")
+				go.cancel_animations(self.sprite_url, "tint")
+				go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_LINEAR, 0.001)
+				go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_LINEAR, 0.001)
+			end
+			msg.post("/inventory_manager", "collectible_clicked")
+			dprint("[btn_collectible] Interact → notificando al Inventory Manager")
+		end
+	end
+end

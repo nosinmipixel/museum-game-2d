@@ -1,0 +1,191 @@
+-- features/exhibition_objects/exhibition_object.script
+-- ═══════════════════════════════════════════════════════
+-- 🏛️ OBJETO DE EXHIBICIÓN — INTERACTIVO
+-- ═══════════════════════════════════════════════════════
+--
+--   Script común de cada objeto de exhibición: hover
+--   (escala/tint del sprite), clic → sonido + ficha de
+--   información. custom_id lo fija el inventory_manager.
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "start_exhibition_info" (hacia exhibition_manager)
+--   Mensajes que RECIBE (on_message):
+--     ← "interact"       (desde cursor)
+--     ← "mouse_hover"    (desde cursor)
+--     ← "set_custom_id"  (desde inventory_manager)
+--     ← "set_active"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+go.property("custom_id", 0)
+
+local WARMUP_TIME = 0.15
+local screen_utils = require "main.screen_utils"
+local component_utils = require "main.component_utils"
+local config = require "main.config"
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_EXHIBITION_OBJECT = false
+local dprint = config.make_log(DEBUG_EXHIBITION_OBJECT)
+
+function init(self)
+	self.timer = 0
+	self.is_warmed_up = false
+
+	-- 📌 Extraer nombre real del GO (para tracking de posición)
+	local id_string_raw = tostring(go.get_id())
+	local clean_path = id_string_raw:match("%s*%[%s*(.-)%s*%]") or id_string_raw
+	self.go_name = clean_path:match("([^/]+)$") or "unknown"
+
+	-- 📌 ID del objeto: si custom_id > 0, lo usa directamente.
+	--    Si no, lo extrae del nombre del GO (para ME_16061, ME_45681, etc.)
+	if self.custom_id and self.custom_id > 0 then
+		self.object_id_string = tostring(self.custom_id)
+	else
+		self.object_id_string = self.go_name
+	end
+
+	self.initial_scale = go.get_scale()
+
+	self.sprite_url = msg.url(nil, nil, "sprite")
+	if not component_utils.component_exists(self.sprite_url, "tint") then
+		self.sprite_url = msg.url(nil, nil, "cofre")
+	end
+
+	-- 🔊 URL del sonido de clic cacheada (regla #4: resolver en init())
+	--    "clic" es un componente sound → propiedad "gain" para component_exists
+	self.clic_url = msg.url(nil, nil, "clic")
+
+	-- 📐 Tamaño del sprite para hover (animamos "size", no "scale")
+	self.sprite_initial_size = go.get(self.sprite_url, "size")
+	self.sprite_hover_size = self.sprite_initial_size * 1.15
+
+	-- 📏 Escala del componente sprite (0.5/0.4/0.3 en los ME_*.go). Regla #4:
+	-- resuelto en init(). Junto a sprite_initial_size da la ALTURA VISUAL del
+	-- sprite (size × scale) para anclar el globo de info a su borde superior.
+	self.sprite_scale = go.get_scale(self.sprite_url)
+end
+
+-- ============================================
+-- FUNCIONES LOCALES HELPER
+-- ============================================
+
+local function set_hover_state(self, is_hovered)
+	if not component_utils.component_exists(self.sprite_url, "tint") then return end
+	if is_hovered then
+		go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_hover_size, go.EASING_OUTCUBIC, 0.15)
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.2, 1.2, 1.1, 1.0), go.EASING_OUTCUBIC, 0.15)
+	else
+		go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_OUTCUBIC, 0.15)
+		go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_OUTCUBIC, 0.15)
+	end
+end
+
+-- ============================================
+-- UPDATE
+-- ============================================
+
+function update(self, dt)
+	if not self.is_warmed_up then
+		self.timer = self.timer + dt
+		if self.timer >= WARMUP_TIME then
+			self.is_warmed_up = true
+		end
+	end
+end
+
+-- ============================================
+-- MESSAGES
+-- ============================================
+
+function on_message(self, message_id, message, sender)
+	-- ⚠️ El warmup solo bloquea mouse_hover e interact.
+	-- set_custom_id y set_active deben procesarse siempre (incluso durante warmup).
+	if not self.is_warmed_up then
+		if message_id == hash("set_custom_id") then
+			self.custom_id = message.item_id or 0
+			self.object_id_string = tostring(self.custom_id)
+			dprint("[exhibition_object] custom_id durante warmup: " .. self.object_id_string)
+		elseif message_id == hash("set_active") then
+			if message.active then
+				msg.post("#collisionobject", "enable")
+				go.set_scale(self.initial_scale)
+			else
+				msg.post("#collisionobject", "disable")
+				-- Nota: go.set_scale no acepta valores <= 0, usar valor muy pequeño
+				go.set_scale(vmath.vector3(0.001, 0.001, 0.001))
+			end
+		end
+		return
+	end
+
+	if message_id == hash("mouse_hover") then
+		set_hover_state(self, message.enter)
+
+	elseif message_id == hash("interact") then
+		-- 🔊 Sonido de clic al abrir información ("clic" es un sound: propiedad "gain")
+		if component_utils.component_exists(self.clic_url, "gain") then
+			sound.play("#clic")
+		end
+
+		dprint("🎯 [Objeto] Interacción en " .. self.object_id_string)
+
+		-- Resetear animaciones del sprite (hover) al interactuar
+		if component_utils.component_exists(self.sprite_url, "tint") then
+			go.cancel_animations(self.sprite_url, "size")
+			go.cancel_animations(self.sprite_url, "tint")
+			-- Nota: go.set no soporta "size"/"tint", usamos animate ultrarrápido
+			go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_LINEAR, 0.001)
+			go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_LINEAR, 0.001)
+		end
+
+		-- OBTENER POSICIÓN MUNDO Y PANTALLA
+		-- 📏 Ago 2026: el globo se ancla al BORDE SUPERIOR del sprite, no al
+		-- centro del GO. Altura visual = size.y × scale del sprite (los ME_*.go
+		-- tienen el sprite sin offset ni pivot → el origen del GO es el centro).
+		-- El offset se envía al manager para que el follow mantenga el MISMO
+		-- ancla (si no, el globo saltaría al arrancar el seguimiento).
+		local half_sprite_h = (self.sprite_initial_size.y * self.sprite_scale.y) * 0.5
+		local world_pos = go.get_position()
+		local screen_pos = screen_utils.world_to_screen(world_pos, half_sprite_h)
+
+		-- ENVIAR AL MANAGER CON POSICIÓN MUNDO
+		msg.post("/game_manager#exhibition_manager", "start_exhibition_info", {
+			object_id = self.object_id_string,
+			screen_pos = screen_pos,
+			world_pos = world_pos,
+			game_object_id = self.go_name,
+			anchor_offset = half_sprite_h
+		})
+
+	elseif message_id == hash("set_custom_id") then
+		-- Mensaje del inventory_manager para establecer el ID del objeto actual
+		self.custom_id = message.item_id or 0
+		self.object_id_string = tostring(self.custom_id)
+		dprint("[exhibition_object] custom_id actualizado a: " .. self.object_id_string)
+
+	elseif message_id == hash("set_active") then
+		-- Activar/desactivar objeto (mostrar/ocultar visualmente y collision)
+		if message.active then
+			msg.post("#collisionobject", "enable")
+			go.set_scale(self.initial_scale)
+			-- Restaurar size y tint del sprite (por si se ocultó durante hover)
+			if component_utils.component_exists(self.sprite_url, "tint") then
+				go.cancel_animations(self.sprite_url, "size")
+				go.cancel_animations(self.sprite_url, "tint")
+				-- Nota: go.set no soporta "size"/"tint", usamos animate ultrarrápido
+				go.animate(self.sprite_url, "size", go.PLAYBACK_ONCE_FORWARD, self.sprite_initial_size, go.EASING_LINEAR, 0.001)
+				go.animate(self.sprite_url, "tint", go.PLAYBACK_ONCE_FORWARD, vmath.vector4(1.0, 1.0, 1.0, 1.0), go.EASING_LINEAR, 0.001)
+			end
+		else
+			msg.post("#collisionobject", "disable")
+			-- Nota: go.set_scale no acepta valores <= 0, usar valor muy pequeño
+			go.set_scale(vmath.vector3(0.001, 0.001, 0.001))
+		end
+	end
+end

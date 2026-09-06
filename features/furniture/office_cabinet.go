@@ -1,0 +1,113 @@
+components {
+  id: "office_cabinet"
+  component: "/features/furniture/office_cabinet.script"
+}
+components {
+  id: "cabinet_slide_door_close"
+  component: "/assets/sounds/cabinet_slide_door_close.sound"
+}
+components {
+  id: "cabinet_slide_door_open"
+  component: "/assets/sounds/cabinet_slide_door_open.sound"
+}
+embedded_components {
+  id: "collisionobject_cursor"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"interactivable\"\n"
+  "mask: \"cursor\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      y: 2.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "    id: \"collision_shape\"\n"
+  "  }\n"
+  "  data: 32.5\n"
+  "  data: 37.5\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}
+embedded_components {
+  id: "sprite_office_cabinet"
+  type: "sprite"
+  data: "default_animation: \"office_cabinet_idle\"\n"
+  "material: \"/builtins/materials/sprite.material\"\n"
+  "size {\n"
+  "  x: 128.0\n"
+  "  y: 128.0\n"
+  "}\n"
+  "textures {\n"
+  "  sampler: \"texture_sampler\"\n"
+  "  texture: \"/features/furniture/furniture.atlas\"\n"
+  "}\n"
+  ""
+  position {
+    y: 2.0
+    z: 0.01
+  }
+  scale {
+    y: 1.2
+  }
+}
+embedded_components {
+  id: "collisionobject_player"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"walls\"\n"
+  "mask: \"player\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      y: -12.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "  }\n"
+  "  data: 32.5\n"
+  "  data: 24.0\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}
+embedded_components {
+  id: "collisionobject_npcs"
+  type: "collisionobject"
+  data: "type: COLLISION_OBJECT_TYPE_KINEMATIC\n"
+  "mass: 0.0\n"
+  "friction: 0.1\n"
+  "restitution: 0.5\n"
+  "group: \"walls\"\n"
+  "mask: \"npcs\"\n"
+  "embedded_collision_shape {\n"
+  "  shapes {\n"
+  "    shape_type: TYPE_BOX\n"
+  "    position {\n"
+  "      y: -12.0\n"
+  "    }\n"
+  "    rotation {\n"
+  "    }\n"
+  "    index: 0\n"
+  "    count: 3\n"
+  "  }\n"
+  "  data: 32.5\n"
+  "  data: 24.0\n"
+  "  data: 10.0\n"
+  "}\n"
+  ""
+}

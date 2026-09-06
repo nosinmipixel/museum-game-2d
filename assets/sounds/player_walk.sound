@@ -1,0 +1,3 @@
+sound: "/assets/sounds/player_walk.ogg"
+group: "sfx"
+looping: 1

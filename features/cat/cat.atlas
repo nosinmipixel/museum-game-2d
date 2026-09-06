@@ -1,0 +1,187 @@
+animations {
+  id: "idle"
+  images {
+    image: "/features/cat/cat_idle_01.png"
+  }
+  images {
+    image: "/features/cat/cat_idle_02.png"
+  }
+  images {
+    image: "/features/cat/cat_idle_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "idle_sitting"
+  images {
+    image: "/features/cat/cat_idle_sitting_01.png"
+  }
+  images {
+    image: "/features/cat/cat_idle_sitting_02.png"
+  }
+  images {
+    image: "/features/cat/cat_idle_sitting_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 4
+}
+animations {
+  id: "walk_left"
+  images {
+    image: "/features/cat/cat_walk_left_01.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_left_02.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_left_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "attack_left"
+  images {
+    image: "/features/cat/cat_attack_left_01.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_left_02.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_left_03.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_left_04.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_left_05.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_left_06.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "walk_right"
+  images {
+    image: "/features/cat/cat_walk_right_01.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_right_02.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_right_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "attack_right"
+  images {
+    image: "/features/cat/cat_attack_right_01.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_right_02.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_right_03.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_right_04.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_right_05.png"
+  }
+  images {
+    image: "/features/cat/cat_attack_right_06.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "run_left"
+  images {
+    image: "/features/cat/cat_run_left_01.png"
+  }
+  images {
+    image: "/features/cat/cat_run_left_02.png"
+  }
+  images {
+    image: "/features/cat/cat_run_left_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "run_right"
+  images {
+    image: "/features/cat/cat_run_right_01.png"
+  }
+  images {
+    image: "/features/cat/cat_run_right_02.png"
+  }
+  images {
+    image: "/features/cat/cat_run_right_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "run_top"
+  images {
+    image: "/features/cat/cat_run_top_01.png"
+  }
+  images {
+    image: "/features/cat/cat_run_top_02.png"
+  }
+  images {
+    image: "/features/cat/cat_run_top_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "run_down"
+  images {
+    image: "/features/cat/cat_run_down_01.png"
+  }
+  images {
+    image: "/features/cat/cat_run_down_02.png"
+  }
+  images {
+    image: "/features/cat/cat_run_down_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "walk_top"
+  images {
+    image: "/features/cat/cat_walk_top_01.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_top_02.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_top_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "walk_down"
+  images {
+    image: "/features/cat/cat_walk_down_01.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_down_02.png"
+  }
+  images {
+    image: "/features/cat/cat_walk_down_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+extrude_borders: 2

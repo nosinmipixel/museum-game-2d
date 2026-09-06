@@ -1,0 +1,200 @@
+-- features/props/nest_container.script
+-- ═══════════════════════════════════════════════════════
+-- 🪺 CONTENEDOR DE NIDOS DE ENEMIGOS
+-- ═══════════════════════════════════════════════════════
+--
+--   Gestiona la creación y reposición de nidos en sus
+--   puntos de spawn hijos (nest_spawn_01..10).
+--
+--   Al iniciar:
+--     1. Escanea hijos nest_spawn_XX y guarda sus posiciones
+--     2. Selecciona MAX_ACTIVE puntos aleatorios (5)
+--     3. Crea un nido en cada punto seleccionado
+--
+--   Al recibir "nest_destroyed" (desde nest.script):
+--     1. Marca el spawn point como libre
+--     2. Si quedan puntos libres, crea un nido nuevo
+--
+-- Convención: nest_spawn_01..10, z=0.1 (patrón food_spawn)
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-17
+-- ═══════════════════════════════════════════════════════
+
+local nest_state = require "main.nest_spawn_state"
+local config = require "main.config"
+
+-- ⚙️ CONFIGURACIÓN
+local MAX_ACTIVE = 5  -- Nidos activos simultáneos (de 10 puntos totales)
+-- 🔧 DEBUG granular
+local DEBUG_NEST_SPAWN = false
+local dprint = config.make_log(DEBUG_NEST_SPAWN)
+
+-- ⚠️ GOTCHA #1: forward declaration
+local initialize_spawns
+local spawn_nest_at_index
+
+-- ═══════════════════════════════════════════════════════
+
+function init(self)
+	nest_state.container_url = msg.url()
+
+	self.spawn_points = {}  -- { position=v3, occupied=bool }
+	self.active_count = 0
+	self.total_destroyed = 0  -- cuántos nidos ha perdido (para saber cuántos quedan)
+	self.is_initialized = false
+end
+
+function update(self, dt)
+	if not self.is_initialized then
+		self.is_initialized = true
+		initialize_spawns(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 DETECCIÓN DINÁMICA DE PUNTOS DE SPAWN
+-- ═══════════════════════════════════════════════════════
+
+local function discover_spawn_points(self)
+	self.spawn_points = {}
+
+	for i = 1, 10 do
+		local name = "nest_spawn_" .. string.format("%02d", i)
+		if go.exists(name) then
+			local pos = go.get_position(name)
+			table.insert(self.spawn_points, {
+				position = pos,
+				occupied = false
+			})
+			dprint("[nest_spawn_container] Encontrado: " .. name)
+		else
+			break
+		end
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🚀 INICIALIZACIÓN DE SPAWNS
+-- ═══════════════════════════════════════════════════════
+
+function initialize_spawns(self)
+	discover_spawn_points(self)
+
+	if #self.spawn_points == 0 then
+		print("[nest_spawn_container] ⚠️ No se encontraron puntos de spawn (nest_spawn_01..10)")
+		return
+	end
+
+	dprint("[nest_spawn_container] Detectados " .. #self.spawn_points .. " puntos de spawn")
+
+	-- Seleccionar aleatoriamente MAX_ACTIVE puntos (o todos si hay menos)
+	local num_to_spawn = math.min(MAX_ACTIVE, #self.spawn_points)
+	local selected_indices = {}
+
+	while #selected_indices < num_to_spawn do
+		local idx = math.random(1, #self.spawn_points)
+		local already_selected = false
+		for _, s in ipairs(selected_indices) do
+			if s == idx then
+				already_selected = true
+				break
+			end
+		end
+		if not already_selected then
+			table.insert(selected_indices, idx)
+		end
+	end
+
+	-- Crear nidos en los puntos seleccionados
+	for _, idx in ipairs(selected_indices) do
+		local ok = spawn_nest_at_index(self, idx)
+		if ok then
+			self.spawn_points[idx].occupied = true
+			self.active_count = self.active_count + 1
+		end
+	end
+
+	dprint("[nest_spawn_container] Creados " .. self.active_count .. "/" .. MAX_ACTIVE .. " nidos activos")
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🎯 CREAR UN NIDO EN UN ÍNDICE DE SPAWN
+-- ═══════════════════════════════════════════════════════
+
+function spawn_nest_at_index(self, spawn_idx)
+	local spawn = self.spawn_points[spawn_idx]
+
+	-- Escribir datos en el módulo compartido ANTES de factory.create
+	nest_state.pending_spawn = {
+		index = spawn_idx,
+		position = spawn.position
+	}
+
+	local ok, err = pcall(factory.create, "#nest_factory", spawn.position)
+	if ok then
+		dprint("[nest_spawn_container] Nido en spawn #" .. spawn_idx .. " (" ..
+		      string.format("%.0f, %.0f", spawn.position.x, spawn.position.y) .. ")")
+		return true
+	else
+		print("[nest_spawn_container] ⚠️ Error al crear nido en spawn #" .. spawn_idx .. ": " .. tostring(err))
+		nest_state.pending_spawn = nil
+		return false
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🔍 BUSCAR PUNTO DE SPAWN LIBRE
+-- ═══════════════════════════════════════════════════════
+
+local function find_free_spawn_index(self, exclude_idx)
+	local free_indices = {}
+	for idx, spawn in ipairs(self.spawn_points) do
+		if not spawn.occupied and idx ~= exclude_idx then
+			table.insert(free_indices, idx)
+		end
+	end
+
+	if #free_indices == 0 then
+		return nil
+	end
+
+	return free_indices[math.random(1, #free_indices)]
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📩 MANEJO DE MENSAJES
+-- ═══════════════════════════════════════════════════════
+
+function on_message(self, message_id, message, sender)
+	if message_id == hash("nest_destroyed") then
+		local spawn_idx = message.spawn_index
+
+		if spawn_idx and self.spawn_points[spawn_idx] then
+			self.spawn_points[spawn_idx].occupied = false
+			self.active_count = math.max(0, self.active_count - 1)
+			self.total_destroyed = self.total_destroyed + 1
+			dprint("[nest_spawn_container] Nido destruido (spawn #" .. spawn_idx .. "). Activos: " .. self.active_count)
+
+			-- Reposición: si quedan puntos libres, crear un nido nuevo
+			local total_spawn_points = #self.spawn_points
+			if self.total_destroyed < total_spawn_points then
+				-- Aún quedan puntos sin usar (la plaga tiene "vidas" acotadas)
+				local free_idx = find_free_spawn_index(self, spawn_idx)
+				if free_idx then
+					local ok = spawn_nest_at_index(self, free_idx)
+					if ok then
+						self.spawn_points[free_idx].occupied = true
+						self.active_count = self.active_count + 1
+						dprint("[nest_spawn_container] Nido repuesto en spawn #" .. free_idx .. ". Activos: " .. self.active_count)
+					end
+				end
+			else
+				dprint("[nest_spawn_container] Todos los puntos de spawn agotados. No más reposiciones.")
+			end
+		else
+			print("[nest_spawn_container] ⚠️ spawn_index inválido: " .. tostring(spawn_idx))
+		end
+	end
+end

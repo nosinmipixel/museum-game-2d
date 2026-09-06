@@ -1,0 +1,85 @@
+animations {
+  id: "idle"
+  images {
+    image: "/features/npc_09/npc_09_idle_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_idle_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_idle_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "talk"
+  images {
+    image: "/features/npc_09/npc_09_talk_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_talk_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_talk_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 8
+}
+animations {
+  id: "walk_left"
+  images {
+    image: "/features/npc_09/npc_09_walk_left_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_left_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_left_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "walk_right"
+  images {
+    image: "/features/npc_09/npc_09_walk_right_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_right_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_right_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "walk_top"
+  images {
+    image: "/features/npc_09/npc_09_walk_top_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_top_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_top_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+animations {
+  id: "walk_down"
+  images {
+    image: "/features/npc_09/npc_09_walk_down_01.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_down_02.png"
+  }
+  images {
+    image: "/features/npc_09/npc_09_walk_down_03.png"
+  }
+  playback: PLAYBACK_LOOP_FORWARD
+  fps: 5
+}
+extrude_borders: 2

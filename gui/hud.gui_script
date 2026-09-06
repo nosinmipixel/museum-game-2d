@@ -1,0 +1,1701 @@
+-- gui/hud.gui_script
+-- ═══════════════════════════════════════════════════════
+-- 📊 HUD — INTERFAZ DE JUEGO
+-- ═══════════════════════════════════════════════════════
+--
+--   Interfaz principal: barras de salud/estamina, iconos de
+--   estado, cola de alertas (FIFO con replace), pies timer
+--   (exhibición/restauración) y contadores por periodo.
+--   Polling 10Hz para timers de cooldown (GOTCHA #22).
+--
+--   Mensajes que ENVÍA (msg.post):
+--     → "respawn_player" (hacia player)
+--   Mensajes que RECIBE (on_message):
+--     ← "update_hud_state"/"show_alert"/"show_persistent_alert"
+--     ← "hide_persistent_alert"/"show_retry_button"/"hide_retry_button"
+--     ← "update_pet_timer"/"hide_pet_timer"/"hide_timer_progress"
+--     ← "input_event"
+--
+-- Licencia: GPL-3.0-only (Ver LICENSE en la raíz)
+-- Versión de Defold: 1.13
+-- Última actualización: 2026-08-15
+-- ═══════════════════════════════════════════════════════
+
+local game_state = require("main.game_state")
+local text_loader = require("main.text_loader")
+local config = require("main.config")
+local gui_touch = require "main.gui_touch"  -- 📱 GOTCHA #13: diana táctil ampliada
+
+-- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
+--    true  = loguea cuando M.DEBUG esté activo
+--    false = silenciado (por defecto)
+local DEBUG_HUD = false
+local dprint = config.make_log(DEBUG_HUD)
+
+local UPDATE_INTERVAL = 0.1
+local CRITICAL_THRESHOLD = 25
+local BLINK_INTERVAL = 0.5
+local MAX_BAR_WIDTH = 100
+
+-- 🖥️ Overlay de FPS: default de PRIMER ARRANQUE (partida nueva). false =
+--    arranca oculto; el jugador lo activa con la tecla F (key_f; letra, no F*:
+--    el navegador intercepta las F en HTML5) o con el toggle "Mostrar FPS" del
+--    menú de pausa — la elección se persiste en game_state → fps_overlay y un
+--    save existente conserva su elección (este constante solo aplica cuando el
+--    save no tiene la clave).
+local FPS_START_VISIBLE = false
+
+-- 📊 Estadísticas de frame time del overlay (pico + 1% low):
+--   • FPS_HIST_BUCKETS: histograma de frame times en buckets de 1 ms,
+--     acumulado SOLO mientras el overlay está activo.
+--   • FPS_STATS_WINDOW: ventana deslizante — cada X segundos se reinician
+--     pico e histograma (las métricas reflejan los últimos X segundos).
+--   • 1% low = FPS medio de los frames más lentos (el peor 1% de la ventana);
+--     necesita FPS_MIN_FRAMES_FOR_LOW frames para ser fiable (si no, se omite).
+--   ⚠️ Definidas AQUÍ (antes de init): init() las usa para crear el histograma
+--     — una local declarada después sería nil en init (GOTCHA #1).
+local FPS_HIST_BUCKETS = 200
+local FPS_STATS_WINDOW = 10.0
+local FPS_MIN_FRAMES_FOR_LOW = 120
+
+-- 📣 Alertas (text_alert): duración de cada alerta transitoria y tope de la cola FIFO
+local ALERT_DURATION = 3.0
+local ALERT_QUEUE_MAX = 4
+
+-- ⏰ Recordatorios periódicos (text_alert): intervalo por defecto (segundos)
+--    entre avisos cuando el jugador tiene una acción pendiente sin completar.
+--    ⚙️ FUENTE ÚNICA (Ago 2026): los intervalos viven en main/config.lua →
+--    M.balance (claves reminder_new_material / reminder_pending_storage /
+--    reminder_no_exp / reminder_restorer_new / reminder_restorer_retry /
+--    reminder_npc_available).
+--    El texto de cada alerta vive en general_text_[lan].lua, pero el TIEMPO
+--    ya NO: se eliminaron las claves *_reminder_time de los textos.
+--    "0" (o negativo) → recordatorio desactivado.
+--    Fallback por si una clave de balance se borra (no rompe el juego).
+local REMINDER_DEFAULT_SECONDS = 180
+
+-- 🔊 Aviso sonoro de los recordatorios: componente montado en el objeto "gui"
+--    de level_01.collection (junto al HUD), resuelto con # dentro del MISMO
+--    objeto — si hud.gui se usara en otra colección sin ese componente,
+--    sound.play solo loguea un warning y no rompe nada. Se reproduce cada vez
+--    que un recordatorio se dispara (run_reminder → alert_enqueue). Grupo
+--    "sfx" → lo controla el slider de efectos del menú de pausa.
+local REMINDER_SOUND_URL = "#smooth_notification"
+
+-- 🏆 Módulo de tareas (módulo puro): TASK_COUNT para el contador de tareas
+--    del HUD. Requerido a NIVEL DE MÓDULO — un require dentro de una función
+--    sería local a esa función (GOTCHA #1).
+local tasks = require "main.tasks"
+
+-- 🛠️ NPC de quiz de restauración (tipo quiz_restoration, ver main/npc.script):
+--    su id se resuelve dinámicamente por tipo (npc_spawn_state), sin ids
+--    hardcodeados. La duración del cooldown vive en
+--    game_state.RESTORER_COOLDOWN_SECONDS (fuente única); aquí solo se lee
+--    para calcular el progreso del pie timer.
+local npc_spawn_state = require "main.npc_spawn_state"
+
+-- 🧑‍🤝‍🧑 NPCs de quiz genéricos (tipo quiz_general): recorridos por el
+--    recordatorio de re-intento disponible tras cooldown. Se excluyen a
+--    propósito por TIPO:
+--      • quiz_restoration → recordatorios propios (restorer_new/retry).
+--      • quiz_false (charla ambiente) → nunca fallan quizzes (attempt == 1),
+--        así que el gate del recordatorio los excluye automáticamente.
+--    Se iteran los NPCs REGISTRADOS con ese tipo (zero-garbage: solo el
+--    bucle sobre npc_types, que es pequeño y estático en runtime).
+
+-- Variables de tarea mostradas como texto (constante: evita re-alocar la tabla en cada ciclo)
+local TASK_TEXT_VARS = { "task_quiz_total", "task_restoration_total", "task_bugs_total" }
+
+-- Cache de textos por VALOR CRUDO: formatea y actualiza SOLO si el valor
+-- crudo cambió, evitando la alocación de string.format() en cada ciclo de
+-- update_texts()/update_climate_texts() cuando los valores están estables
+-- (regla #5 del estándar: update on change).
+local function set_text_value_cached(self, cache_key, node, format_str, value)
+	if node and self.text_cache[cache_key] ~= value then
+		self.text_cache[cache_key] = value
+		gui.set_text(node, string.format(format_str, value))
+	end
+end
+
+-- Cache de textos preformateados (para strings ya construidos, p. ej. rangos).
+local function set_text_cached(self, cache_key, node, formatted)
+	if node and self.text_cache[cache_key] ~= formatted then
+		self.text_cache[cache_key] = formatted
+		gui.set_text(node, formatted)
+	end
+end
+
+-- Cache de textos por valor con tostring (agnóstico de tipo, como tostring()
+-- original): actualiza solo si el valor crudo cambió. Evita la alocación en
+-- cada ciclo cuando los contadores están estables.
+local function set_text_tostring_cached(self, cache_key, node, value)
+	if node and self.text_cache[cache_key] ~= value then
+		self.text_cache[cache_key] = value
+		gui.set_text(node, tostring(value))
+	end
+end
+
+-- Definir colores manualmente (vector4)
+local COLOR_GREEN = vmath.vector4(0.0, 1.0, 0.0, 1.0)
+local COLOR_YELLOW = vmath.vector4(1.0, 1.0, 0.0, 1.0)
+local COLOR_ORANGE = vmath.vector4(1.0, 0.65, 0.0, 1.0)
+local COLOR_RED = vmath.vector4(1.0, 0.0, 0.0, 1.0)
+
+-- Colores para la barra de spray (azul)
+local COLOR_BLUE_FULL = vmath.vector4(0x1A/255, 0x33/255, 0x99/255, 1.0)   -- #1a3399
+local COLOR_BLUE_EMPTY = vmath.vector4(0.05, 0.1, 0.3, 1.0)                  -- azul oscuro
+local SPRAY_CRITICAL_THRESHOLD = 25
+
+-- Colores y escalas para el botón de reintentar
+local BTN_NORMAL_COLOR = vmath.vector4(1.0, 1.0, 1.0, 1.0)
+local BTN_HOVER_COLOR = vmath.vector4(0.8, 1.0, 0.8, 1.0)
+-- 📱 GOTCHA #13: el hover es RELATIVO a la escala base del botón (en táctil la
+--    base crece ~1.76× para alcanzar ≥44px CSS; en PC base=1.0 → igual que antes)
+local BTN_HOVER_FACTOR = 1.1
+local BTN_HOVER_DURATION = 0.12
+
+local function get_bar_color(percentage)
+	local t = percentage / 100.0   -- t=1 (100%) → verde, t=0 (0%) → rojo
+	local r = 1.0 - t
+	local g = t
+	local b = 0.0
+	return vmath.vector4(r, g, b, 1.0)
+end
+
+local function get_spray_bar_color(percentage)
+	local t = math.min(1, math.max(0, percentage / 100.0))
+	-- Interpolación lineal entre COLOR_BLUE_EMPTY (t=0) y COLOR_BLUE_FULL (t=1)
+	local r = COLOR_BLUE_EMPTY.x + (COLOR_BLUE_FULL.x - COLOR_BLUE_EMPTY.x) * t
+	local g = COLOR_BLUE_EMPTY.y + (COLOR_BLUE_FULL.y - COLOR_BLUE_EMPTY.y) * t
+	local b = COLOR_BLUE_EMPTY.z + (COLOR_BLUE_FULL.z - COLOR_BLUE_EMPTY.z) * t
+	return vmath.vector4(r, g, b, 1.0)
+end
+
+-- ============================================
+-- FUNCIONES DEL BOTÓN DE REINTENTAR
+-- ============================================
+
+local function show_retry_button(self)
+	gui.set_enabled(self.btn_retry_container, true)
+	-- 📱 GOTCHA #13: escala base (editor en PC; ampliada en táctil). Se calcula
+	-- aquí (no en init) para que la detección de plataforma ya esté resuelta.
+	local base = gui_touch.total_scale(gui.get_size(self.btn_retry_container).y)
+	self.retry_base_scale = vmath.vector3(base, base, 1.0)
+	gui.set_scale(self.btn_retry_container, self.retry_base_scale)
+	gui.set_color(self.btn_retry_container, BTN_NORMAL_COLOR)
+	self.retry_hovering = false
+
+	-- Asegurar que el HUD recibe input para los clics en el botón
+	msg.post(".", "acquire_input_focus")
+end
+
+local function hide_retry_button(self)
+	gui.set_enabled(self.btn_retry_container, false)
+	self.retry_hovering = false
+end
+
+local function animate_retry_hover(self, hovering)
+	local base = self.retry_base_scale or vmath.vector3(1.0, 1.0, 1.0)
+	local hover_scale = vmath.vector3(base.x * BTN_HOVER_FACTOR, base.y * BTN_HOVER_FACTOR, 1.0)
+	if hovering then
+		gui.cancel_animations(self.btn_retry_container, gui.PROP_SCALE)
+		gui.cancel_animations(self.btn_retry_container, gui.PROP_COLOR)
+		gui.animate(self.btn_retry_container, gui.PROP_SCALE, hover_scale, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		gui.animate(self.btn_retry_container, gui.PROP_COLOR, BTN_HOVER_COLOR, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	else
+		gui.cancel_animations(self.btn_retry_container, gui.PROP_SCALE)
+		gui.cancel_animations(self.btn_retry_container, gui.PROP_COLOR)
+		gui.animate(self.btn_retry_container, gui.PROP_SCALE, base, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+		gui.animate(self.btn_retry_container, gui.PROP_COLOR, BTN_NORMAL_COLOR, gui.EASING_OUTQUAD, BTN_HOVER_DURATION)
+	end
+end
+
+-- ============================================
+-- FUNCIÓN COMPARTIDA: parpadeo de barra en estado crítico
+-- Gestiona blink_timer + blink_visible + alpha de bar_color
+-- Se usa tanto para health bar como para spray bar
+-- ============================================
+local function update_blink_bar(self, timer_key, visible_key, is_critical, bar_node, bar_color)
+	if is_critical then
+		self[timer_key] = self[timer_key] + UPDATE_INTERVAL
+		if self[timer_key] >= BLINK_INTERVAL then
+			self[timer_key] = 0
+			self[visible_key] = not self[visible_key]
+		end
+		bar_color.w = self[visible_key] and 1.0 or 0.3
+	else
+		self[visible_key] = true
+		self[timer_key] = 0
+		bar_color.w = 1.0
+	end
+	gui.set_color(bar_node, bar_color)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 📊 CONTADORES DE PERIODO (actualizados por evento)
+-- ═══════════════════════════════════════════════════════
+-- Se llaman desde on_message(update_hud_state) y al cargar partida.
+-- No se ejecutan en el polling de update_texts() porque los valores
+-- solo cambian en eventos de inventory_manager (~50 veces por partida).
+-- ═══════════════════════════════════════════════════════
+
+local function update_period_counts(self)
+	local items_status = game_state.get_global("inventory_items_status") or {}
+	local collectibles_data = require "main.collectibles_data"
+
+	-- 📊 Progreso por periodo (Ago 2026): la rejilla muestra "exhibidas/total"
+	-- (p. ej. 1/2) por periodo. La fila de "almacén" (text_period_stor_*) se
+	-- retiró y sus nodos se eliminaron del .gui: el estado STORAGE es
+	-- transitorio (0→1→0 al expirar el Timer A) y la pieza se ve físicamente
+	-- en la estantería, así que el contador no aportaba información al jugador
+	-- y parecía un fallo.
+	local exhib = { pal = 0, neo = 0, bro = 0, ibe = 0, rom = 0 }
+	local totals = { pal = 0, neo = 0, bro = 0, ibe = 0, rom = 0 }
+
+	-- Total de objetos por periodo, calculado desde collectibles_data (se
+	-- adapta solo si se añaden objetos nuevos, sin tocar este código).
+	for _, item in pairs(collectibles_data.items) do
+		if totals[item.period] ~= nil then
+			totals[item.period] = totals[item.period] + 1
+		end
+	end
+
+	-- Contar exhibidas (estado "completed") por periodo
+	for item_id, state in pairs(items_status) do
+		local item = collectibles_data.items[item_id]
+		if item and exhib[item.period] ~= nil and state == "completed" then
+			exhib[item.period] = exhib[item.period] + 1
+		end
+	end
+
+	-- Progreso por periodo: "exhibidas/total" (p. ej. 1/2)
+	if self.period_nodes and self.period_nodes.exhib then
+		for period_key, node in pairs(self.period_nodes.exhib) do
+			if node then
+				local total = totals[period_key] or 0
+				gui.set_text(node, tostring(exhib[period_key] or 0) .. "/" .. tostring(total))
+			end
+		end
+	end
+end
+
+-- 🏷️ Etiqueta de la rejilla de periodos (localizada): explica que los
+-- contadores son "exhibidas/total" por periodo (p. ej. 1/2). Se refresca al
+-- cargar y al cambiar de idioma en caliente.
+local function refresh_period_label(self)
+	if not self.period_label then return end
+	local label = (self.general_texts.inventory and self.general_texts.inventory.period_progress_label)
+		or "Objetos exhibidos por periodo"
+	gui.set_text(self.period_label, label)
+end
+
+-- ⚠️ GOTCHA #1 (DEV_GOTCHAS.md): init() y update() llaman a update_texts() y
+-- update_climate_texts(), definidas MÁS ABAJO en el archivo. Forward declaration
+-- (patrón establecido con interactive.gui_script en Fase 1) para que los callers
+-- las capturen como upvalues al cargar el script.
+local update_texts
+local update_climate_texts
+local update_restoration_timer
+local refresh_hud_texts
+local refresh_insecticide_icon
+
+-- ═══════════════════════════════════════════════════════
+-- 📣 SISTEMA DE ALERTAS (cola FIFO acotada + temporizador único)
+-- ═══════════════════════════════════════════════════════
+--   text_alert es un contenedor compartido por muchas fuentes (inventory,
+--   pickups, muebles, gato...). Sin gestión, los mensajes se pisaban y los
+--   timer.delay(3.0) de cada show_alert se APILABAN: el primero en expirar
+--   ocultaba la alerta actual aunque fuera otra más nueva (se cortaba a los
+--   2s, o un transitorio mataba un hover persistente).
+--
+--   Diseño (Ago 2026):
+--     • Cola FIFO acotada (ALERT_QUEUE_MAX): ningún transitorio se pierde;
+--       si la cola está llena se descarta el MÁS ANTIGUO (prevalece la
+--       información más reciente).
+--     • Temporizador ÚNICO en update() (self.alert_timer): sin timers
+--       apilados → cada alerta dura ALERT_DURATION completos.
+--     • Prioridad persistente: la alerta persistente (hover de muebles/gato)
+--       se muestra al instante; el transitorio que estuviera visible vuelve
+--       al FRENTE de la cola y se reanuda al ocultar la persistente.
+--     • Dedup: si llega un transitorio con el MISMO texto que el visible,
+--       se reinicia su temporizador en vez de encolarlo (evita mostrar el
+--       mismo mensaje dos veces seguidas).
+--     • Replace (hover posicional, p. ej. títulos de estanterías): un
+--       mensaje con replace=true se muestra AL INSTANTE sin cola y
+--       reemplaza lo que hubiera visible; un toast transitorio interrumpido
+--       vuelve al FRENTE de la cola (no se pierde).
+
+-- Muestra el siguiente mensaje de la cola (o desactiva el nodo si vacía).
+-- Se ejecuta tras un cambio de estado (timer expirado o hide persistente).
+local function alert_show_next(self)
+	local next_alert = table.remove(self.alert_queue, 1)
+	if next_alert then
+		-- Los items de la cola son SIEMPRE transitorios (las persistentes se
+		-- muestran al instante y nunca se encolan): persistent = false fijo.
+		self.alert_current = next_alert.text
+		self.alert_persistent = false
+		self.alert_timer = ALERT_DURATION
+		gui.set_text(self.alert_node, next_alert.text)
+		gui.set_enabled(self.alert_node, true)
+	else
+		self.alert_current = nil
+		self.alert_persistent = false
+		self.alert_timer = 0
+		gui.set_enabled(self.alert_node, false)
+	end
+end
+
+-- Si hay un transitorio visible y llega un mensaje que debe mostrarse YA
+-- (persistente o replace), el transitorio interrumpido vuelve al FRENTE de la
+-- cola para reanudarse después. Con la cola llena se descarta el más ANTIGUO
+-- (índice 1; el último es el más reciente): prevalece la información reciente.
+local function alert_push_interrupted_to_front(self)
+	if self.alert_current and not self.alert_persistent then
+		if #self.alert_queue >= ALERT_QUEUE_MAX then
+			table.remove(self.alert_queue, 1)  -- descartar el más antiguo
+		end
+		table.insert(self.alert_queue, 1, { text = self.alert_current })
+	end
+end
+
+-- Encola un mensaje según su tipo (transitorio / persistente / replace).
+local function alert_enqueue(self, text, persistent, replace, defer)
+	if not self.alert_node then
+		dprint("[HUD Alerta] " .. tostring(text))
+		return
+	end
+
+	-- 🗣️ defer (diálogo con NPC activo): el aviso SOLO se encola, no se
+	--    muestra — espera a que termine la interacción. La cola FIFO ya
+	--    garantiza el orden y el tope ALERT_QUEUE_MAX (descarta el más
+	--    antiguo si se llena).
+	if defer then
+		if #self.alert_queue >= ALERT_QUEUE_MAX then
+			table.remove(self.alert_queue, 1)  -- descartar el más antiguo
+		end
+		table.insert(self.alert_queue, { text = text })
+		return
+	end
+
+	if replace then
+		-- 🥇 REPLACE (hover posicional, p. ej. títulos de estanterías): muestra
+		--    el texto AL INSTANTE, sin cola. El desplazado se trata por tipo:
+		--      • Transitorio visible (toast) → vuelve al FRENTE de la cola
+		--        (se reanudará tras el timer del nuevo; no se pierde).
+		--      • Persistente visible (hover de mueble/gato) → se descarta (el
+		--        emisor lo re-afirma en su próximo ciclo enter/exit).
+		--    Los toasts ya encolados no se tocan.
+		alert_push_interrupted_to_front(self)
+		self.alert_current = text
+		self.alert_persistent = false
+		self.alert_timer = ALERT_DURATION
+		gui.set_text(self.alert_node, text)
+		gui.set_enabled(self.alert_node, true)
+		return
+	end
+
+	if persistent then
+		-- 🥇 Prioridad persistente: si había un transitorio visible, vuelve al
+		-- frente de la cola (se reanudará al ocultar la persistente).
+		alert_push_interrupted_to_front(self)
+		self.alert_current = text
+		self.alert_persistent = true
+		self.alert_timer = 0
+		gui.set_text(self.alert_node, text)
+		gui.set_enabled(self.alert_node, true)
+		return
+	end
+
+	-- Transitorio: dedup contra el visible (reinicia el temporizador)
+	if self.alert_current == text and not self.alert_persistent then
+		self.alert_timer = ALERT_DURATION
+		return
+	end
+
+	-- Si ya se muestra algo (transitorio o persistente), encolar
+	if self.alert_current then
+		if #self.alert_queue >= ALERT_QUEUE_MAX then
+			table.remove(self.alert_queue, 1)  -- descartar el más antiguo
+		end
+		table.insert(self.alert_queue, { text = text })
+		return
+	end
+
+	-- Nada visible: mostrar ya
+	self.alert_current = text
+	self.alert_persistent = false
+	self.alert_timer = ALERT_DURATION
+	gui.set_text(self.alert_node, text)
+	gui.set_enabled(self.alert_node, true)
+end
+
+-- 💀 Fallback del mensaje de derrota por si la clave fight_defeat falta en
+--    general_text_[lan].lua (constante única: evita drift entre call sites).
+local DEFEAT_FALLBACK_TEXT = "Has sido derrotado"
+
+-- 💀 Texto de derrota según la CAUSA de la muerte (Ago 2026): player.script
+--    pasa la causa en show_retry_button{ cause } y este script la guarda en
+--    self.defeat_cause. "car" (atropello del coche) → dialogs.car_defeat;
+--    cualquier otra (plagas) → dialogs.fight_defeat. Fallbacks en cascada:
+--    clave específica → fight_defeat → constante. Fuente única para los dos
+--    call sites (show_retry_button y re-render por cambio de idioma).
+local function get_defeat_text(self)
+	local dialogs = self.general_texts.dialogs or {}
+	if self.defeat_cause == "car" then
+		return dialogs.car_defeat or dialogs.fight_defeat or DEFEAT_FALLBACK_TEXT
+	end
+	return dialogs.fight_defeat or DEFEAT_FALLBACK_TEXT
+end
+
+-- 🔁 Fallback del texto del botón de reintentar por si la clave ui.btn_retry
+--    falta en general_text_[lan].lua. El nodo text_retry declara "Reintentar"
+--    en hud.gui, pero el gui_script SIEMPRE lo sobreescribe con el texto
+--    localizado (init + refresh_hud_texts) — si no, aparecería en español
+--    aunque el idioma sea otro (GOTCHA botón reintentar).
+local RETRY_FALLBACK_TEXT = "Reintentar"
+
+-- 💀 Oculta el mensaje de derrota (fight_defeat): se llama al pulsar
+--    Reintentar y al recibir hide_retry_button (respawn efectivo). La derrota
+--    es una alerta PERSISTENTE (sin timeout) que solo debe desaparecer en ese
+--    momento. El flag se limpia SIEMPRE (solo se llama en respawn → la derrota
+--    ha terminado sí o sí); la reanudación de la cola FIFO se condiciona a que
+--    la derrota siga siendo la alerta visible (si otra la hubiera sustituido,
+--    esa otra alerta no debe tocarse ni "resucitar" la derrota después).
+local function hide_defeat_alert(self)
+	if self.defeat_alert_text then
+		local was_defeat = (self.alert_current == self.defeat_alert_text)
+		self.defeat_alert_text = nil
+		self.defeat_cause = nil
+		if was_defeat and self.alert_persistent then
+			alert_show_next(self)
+		end
+	end
+end
+
+-- 🌐 Recarga los textos dependientes del idioma (general + main) y re-renderiza
+--    lo que depende de ellos: text_period_label, la derrota persistente y la
+--    cola de transitorios. Se llama desde el callback de idioma (instantáneo) y
+--    desde update_texts por POLLING (red de seguridad). 🐛 Motivo: game_state
+--    ejecuta los callbacks con pcall y ELIMINA el que lance un error (Ago 2026);
+--    si el callback del HUD muriera, text_period_label (que solo se refrescaba
+--    aquí) dejaría de responder al cambiar de idioma mientras text_skills/
+--    text_tasks_total seguían bien (update_texts los refresca cada 0.1 s).
+local function refresh_hud_texts(self)
+	self.general_texts = text_loader.reload("general", self._lang) or {}
+	self.characters = (text_loader.reload("main", self._lang) or {}).characters
+	-- (load_reminder_config NO se llama aquí: los intervalos viven en
+	-- config.lua y no dependen del idioma — opción B, fuente única).
+
+	-- 🏷️ Etiqueta de la rejilla de periodos (text_period_label)
+	refresh_period_label(self)
+
+	-- 🔁 Texto del botón de reintentar (ui.btn_retry): re-renderizar con el
+	--    idioma nuevo (el nodo trae "Reintentar" hardcodeado en hud.gui).
+	if self.text_retry then
+		local ui = self.general_texts.ui or {}
+		gui.set_text(self.text_retry, ui.btn_retry or RETRY_FALLBACK_TEXT)
+	end
+
+	-- 💬 Alertas transitorias (text_alert): textos del idioma anterior →
+	--    descartarlas (los nuevos avisos llegan localizados). La derrota
+	--    (persistente) se re-renderiza abajo con el texto nuevo.
+	self.alert_queue = {}
+	if self.alert_current and not self.alert_persistent then
+		self.alert_current = nil
+		self.alert_timer = 0
+		if self.alert_node then
+			gui.set_enabled(self.alert_node, false)
+		end
+	end
+
+	-- 💀 Si la derrota está visible al cambiar de idioma, re-renderizarla
+	--    con la MISMA causa (get_defeat_text usa self.defeat_cause).
+	if self.defeat_alert_text then
+		local defeat_text = get_defeat_text(self)
+		self.defeat_alert_text = defeat_text
+		self.alert_current = defeat_text
+		if self.alert_node then
+			gui.set_text(self.alert_node, defeat_text)
+		end
+	end
+
+	dprint("[HUD] Textos recargados por cambio de idioma a: " .. tostring(self._lang))
+end
+
+-- ═══════════════════════════════════════════════════════
+-- ⏰ RECORDATORIOS PERIÓDICOS (text_alert)
+-- ═══════════════════════════════════════════════════════
+--   Re-muestran una alerta cada X segundos mientras el jugador tenga una
+--   acción pendiente sin completar:
+--     • new_material (alert_new_material): el objeto activo sigue en PICKUP
+--       (disponible para recogida) y no se ha recogido.
+--     • pending_storage (alert_pending_storage): el objeto activo está
+--       recogido pero SIN depositar en la estantería — COLLECTED (recogido
+--       sin restaurar) o STORAGE sin Timer A activo (restaurado pero sin
+--       depositar: el Timer A solo arranca al clicar la estantería). El flag
+--       self.timer_a_running (mensajes update/hide_timer_progress) distingue
+--       el STORAGE depositado (timer corriendo) del pendiente de depósito.
+--     • no_exp (rule_no_exp): el objeto activo está en EXHIBITION (listo
+--       para vitrina tras el tiempo obligatorio en almacén) y no se ha
+--       expuesto para completar el ciclo.
+--     • restorer_new (alert_new_restoration): la pieza activa sigue en
+--       RESTORATION y el NPC de restauración está disponible, pero el
+--       jugador AÚN NO ha hecho el quiz (intento actual == 1).
+--     • restorer_retry (alert_new_attempt_restoration): la pieza sigue en
+--       RESTORATION, el NPC de restauración está disponible y el jugador YA hizo el
+--       quiz y falló, pero le quedan turnos de respuesta (intento actual >= 2).
+--       Complementa al aviso proactivo único del dialogue_manager (timer.delay
+--       en RAM, que no sobrevive a guardar/recargar) con un recordatorio
+--       persistente por polling (mismo patrón que update_restoration_timer,
+--       ver DEV_GOTCHAS).
+--     • npc_retry (alert_npc_available): el jugador falló el quiz de un NPC
+--       genérico (attempt >= 2), le quedan turnos y el cooldown expiró. Solo
+--       reintentos → respeta el libre albedrío: nunca empuja hacia un NPC que
+--       el jugador no ha elegido (attempt == 1). Es TEXTO DINÁMICO: el nombre
+--       localizado (main_text → characters) se inserta en el patrón al
+--       dispararse (variante text_fn de run_reminder, ver abajo).
+--   El intervalo se lee de main/config.lua → M.balance (claves reminder_*,
+--   fuente única); si falta o no es numérico se usa REMINDER_DEFAULT_SECONDS.
+--   El texto del mensaje vive en general_text_[lan].lua (solo contenido). El
+--   contador se reinicia cuando cambia el estado (la acción ya no está
+--   pendiente). Zero-garbage: solo aritmética; la alerta se encola únicamente
+--   al dispararse.
+--
+--   ➕ Añadir un recordatorio nuevo toca 3 sitios (acoplamiento intencionado):
+--     1. self.reminder_elapsed.<clave> en init()
+--     2. self.reminder_config.<clave> en load_reminder_config()
+--     3. una llamada a run_reminder() en update_reminders()
+--   La variante de texto dinámico (npc_retry) añade además: los helpers
+--   find_retry_npc/build_npc_retry_text y la carga de self.characters.
+
+-- (Re)lee los intervalos de recordatorio desde main/config.lua → M.balance
+-- (fuente única de los tiempos; los textos solo aportan el mensaje). Se
+-- llama en init() y al recargar por cambio de idioma (idempotente: no depende
+-- del idioma, pero refrescarla no hace daño). El `or` con un valor numérico
+-- respeta un "0" intencional (desactiva el recordatorio): solo actúa sobre nil.
+local function load_reminder_config(self)
+	local balance = config.balance or {}
+	local function read_seconds(raw, default)
+		local t = tonumber(raw)
+		if t ~= nil then
+			return t  -- 0 o negativo = desactivado; positivo = intervalo en s
+		end
+		return default
+	end		self.reminder_config = {
+		new_material   = read_seconds(balance.reminder_new_material, REMINDER_DEFAULT_SECONDS),
+		pending_storage = read_seconds(balance.reminder_pending_storage, REMINDER_DEFAULT_SECONDS),
+		no_exp         = read_seconds(balance.reminder_no_exp, REMINDER_DEFAULT_SECONDS),
+		restorer_new   = read_seconds(balance.reminder_restorer_new, REMINDER_DEFAULT_SECONDS),
+		restorer_retry = read_seconds(balance.reminder_restorer_retry, REMINDER_DEFAULT_SECONDS),
+		npc_retry      = read_seconds(balance.reminder_npc_available, REMINDER_DEFAULT_SECONDS),
+	}
+end
+
+-- ⚙️ Helper compartido de recordatorio: acumula el tiempo transcurrido
+-- mientras la condición `active` sea cierta y el intervalo configurado sea > 0;
+-- al superar el intervalo, encola la alerta y reinicia el contador. Si la
+-- condición deja de cumplirse, el contador se reinicia a 0.
+--   • text    → texto fijo (nil si no existe → no se encola nada). SOLO se
+--     usa cuando no hay text_fn: si text_fn devolviera nil (p. ej. el NPC
+--     dejó de estar disponible), NO se cae al texto crudo — no se encola.
+--   • text_fn → variante de TEXTO DINÁMICO (opcional): función que construye
+--     el mensaje SOLO al dispararse (p. ej. recordatorio de NPC con nombre
+--     localizado insertado). Debe ser una función local constante (no una
+--     closure por frame) para mantener zero-garbage.
+-- Zero-garbage: solo aritmética; la alerta se encola únicamente al dispararse.
+local function run_reminder(self, elapsed_key, interval, text, active, dt, text_fn)
+	if interval > 0 and active then
+		self.reminder_elapsed[elapsed_key] = self.reminder_elapsed[elapsed_key] + dt
+		if self.reminder_elapsed[elapsed_key] >= interval then
+			self.reminder_elapsed[elapsed_key] = 0
+			local msg
+			if text_fn then
+				msg = text_fn(self)
+			else
+				msg = text
+			end
+			if msg then
+				alert_enqueue(self, msg, false, false)
+				-- 🔊 Aviso sonoro suave: el recordatorio se dispara (no cada frame,
+				--    solo al superar el intervalo) → sonido corto de notificación.
+				sound.play(REMINDER_SOUND_URL)
+			end
+		end
+	else
+		self.reminder_elapsed[elapsed_key] = 0
+	end
+end
+
+-- 🔎 Busca el primer NPC de quiz genérico con RE-INTENTO pendiente y disponible:
+--    el jugador falló su quiz al menos una vez (attempt >= 2), aún le quedan
+--    turnos (no completed) y el cooldown expiró (is_npc_available filtra ambos).
+--    Devuelve (npc_id, nombre localizado) o (nil, nil).
+--    Zero-garbage: solo lookups de tabla + os.time; get_npc_attempt (lectura
+--    barata) filtra primero, así que is_npc_available solo se consulta para
+--    NPCs ya fallados (los nunca elegidos se saltan: attempt == 1).
+local function find_retry_npc(self)
+	for npc_id, npc_type in pairs(npc_spawn_state.npc_types) do
+		if npc_type == npc_spawn_state.NPC_TYPE_QUIZ_GENERAL
+			and game_state.get_npc_attempt(npc_id) >= 2 and game_state.is_npc_available(npc_id) then
+			local char = self.characters and self.characters[npc_id]
+			local name = (char and char.name) or npc_id
+			return npc_id, name
+		end
+	end
+	return nil, nil
+end
+
+-- 🧩 Texto del recordatorio de NPC (variante dinámica de run_reminder): solo se
+--    llama al dispararse (una vez por intervalo). Re-escanea el NPC disponible
+--    (barato) y sustituye el nombre localizado en el patrón alert_npc_available
+--    ("%s"). Si el patrón no existiera, devuelve nil → no se encola nada.
+local function build_npc_retry_text(self)
+	local _, name = find_retry_npc(self)
+	if not name then return nil end
+	local tutorials = self.general_texts.tutorials or {}
+	local pattern = tutorials.alert_npc_available
+	return pattern and string.format(pattern, name) or nil
+end
+
+-- Declara cada recordatorio periódico: condición de activación + texto + clave
+-- de intervalo (run_reminder comparte el patrón acumular/verificar/reiniciar).
+local function update_reminders(self, dt)
+	-- 🗣️ El jugador está en un diálogo/quiz con un NPC (flag global gestionado
+	--    por el dialogue_manager): PAUSAR los recordatorios. Los contadores se
+	--    congelan (run_reminder no acumula dt) y se reanudan al cerrar el
+	--    diálogo desde donde iban — la acción sigue pendiente, no se pierde el
+	--    aviso ni suena el sonido durante la interacción.
+	if game_state.get_dialog_active() then
+		return
+	end
+
+	-- Estado del objeto activo (si existe)
+	local items_status = game_state.get_global("inventory_items_status") or {}
+	local current_item_id = game_state.get_global("inventory_current_item_id")
+	local state = current_item_id and items_status[current_item_id] or nil
+	local tutorials = self.general_texts.tutorials or {}
+
+	-- 🔔 Recogida: objeto en PICKUP sin recoger
+	run_reminder(self, "new_material", self.reminder_config.new_material,
+		tutorials.alert_new_material, state == "pickup", dt)
+
+	-- 🏬 Depósito en almacén: el objeto activo está recogido pero SIN
+	--    depositar en la estantería. Dos casos:
+	--      • COLLECTED → recogido sin restaurar, pendiente de depósito.
+	--      • STORAGE sin Timer A activo → restaurado pero aún sin depositar
+	--        (el Timer A solo arranca al clicar la estantería; el flag
+	--        timer_a_running lo distingue del STORAGE ya depositado).
+	local pending_storage = (state == "collected")
+		or (state == "storage" and not self.timer_a_running)
+	run_reminder(self, "pending_storage", self.reminder_config.pending_storage,
+		tutorials.alert_pending_storage, pending_storage, dt)
+
+	-- 🏛️ Exhibición: objeto en EXHIBITION sin exponer
+	run_reminder(self, "no_exp", self.reminder_config.no_exp,
+		tutorials.rule_no_exp, state == "exhibition", dt)
+
+	-- 🛠️ Restauración: pieza en RESTORATION y NPC de restauración disponible
+	--    (cooldown expirado). Mientras el cooldown esté activo NO se recuerda
+	--    (el pie timer del HUD ya muestra la cuenta atrás). Se distinguen dos
+	--    variantes por el intento actual del quiz (game_state.get_npc_attempt):
+	--      • intento == 1 → sin quiz hecho → alert_new_restoration
+	--      • intento >= 2 → falló con turnos → alert_new_attempt_restoration
+	-- 🛠️ El NPC de quiz de restauración se identifica por tipo (npc_spawn_state),
+	--    sin ids hardcodeados (nil → recordatorios de restauración apagados).
+	local restorer_npc_id = npc_spawn_state.find_npc_by_type(npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION)
+	local restorer_available = (state == "restoration")
+		and restorer_npc_id ~= nil
+		and (game_state.get_npc_cooldown_remaining(restorer_npc_id) <= 0)
+	local restorer_attempt = restorer_available and game_state.get_npc_attempt(restorer_npc_id) or 0
+
+	-- 🔧 A) Aún no ha hecho el quiz (primer intento)
+	run_reminder(self, "restorer_new", self.reminder_config.restorer_new,
+		tutorials.alert_new_restoration, restorer_attempt == 1, dt)
+
+	-- 🧪 B) Ha hecho el quiz y ha fallado (turnos restantes)
+	run_reminder(self, "restorer_retry", self.reminder_config.restorer_retry,
+		tutorials.alert_new_attempt_restoration, restorer_attempt >= 2, dt)
+
+	-- 🧑‍🤝‍🧑 NPC de quiz disponible (RE-INTENTO): el jugador falló su quiz
+	--    (attempt >= 2), le quedan turnos y el cooldown expiró. Solo reintentos
+	--    → respeta el libre albedrío a la hora de elegir NPCs. El nombre
+	--    localizado (characters) hace el aviso accionable. Si hay varios
+	--    pendientes se avisa del primero de la lista (one alert at a time).
+	--    El texto es dinámico (text_fn): string.format solo al dispararse. La
+	--    búsqueda se salta si el recordatorio está desactivado (intervalo <= 0)
+	--    → cero coste cuando no se usa (mismo ethos que el overlay de FPS).
+	local retry_npc_id = (self.reminder_config.npc_retry > 0) and find_retry_npc(self) or nil
+	run_reminder(self, "npc_retry", self.reminder_config.npc_retry,
+		nil, retry_npc_id ~= nil, dt, build_npc_retry_text)
+end
+
+function init(self)
+	-- 🎨 Orden de render global de las GUI (mayor = encima):
+	-- pause=4 > library=3 > exhibition=2 > interactive=1 > hud=0
+	gui.set_render_order(0)
+
+	self.text_nodes = {
+		health = gui.get_node("text_health"),
+		skills = gui.get_node("text_skills"),
+		task_quiz_total = gui.get_node("text_quiz_total"),
+		task_restoration_total = gui.get_node("text_quiz_restoration_total"),
+		collectibles_items_total = gui.get_node("text_items_collected"),
+		task_bugs_total = gui.get_node("text_bugs_total"),
+		tasks_total = gui.get_node("text_tasks_total")
+	}
+
+	-- 🌡️ Nodos de clima: temperatura y humedad
+	self.text_temperature = gui.get_node("text_temperature")
+	self.text_humity = gui.get_node("text_humity")
+
+	-- Nodos de periodo (almacén y exhibición por periodo)
+	-- Rejilla: 5 periodos × 2 estados, actualizados por evento (no por polling)
+	self.period_nodes = {
+		exhib = {
+			pal = gui.get_node("text_period_exhib_pal"),
+			neo = gui.get_node("text_period_exhib_neo"),
+			bro = gui.get_node("text_period_exhib_bro"),
+			ibe = gui.get_node("text_period_exhib_ibe"),
+			rom = gui.get_node("text_period_exhib_rom"),
+		},
+	}
+
+	-- 🏷️ Etiqueta localizada de la rejilla: explica los contadores
+	-- "exhibidas/total" (p. ej. 1/2).
+	self.period_label = gui.get_node("text_period_label")
+
+	-- Barra de salud
+	self.health_bar = gui.get_node("health_bar_fill")
+	if self.health_bar then
+		self.original_size = gui.get_size(self.health_bar) or vmath.vector3(MAX_BAR_WIDTH, 15, 0)
+	end
+
+	-- Barra de spray
+	self.spray_bar = gui.get_node("spray_bar_fill")
+	if self.spray_bar then
+		self.spray_original_size = gui.get_size(self.spray_bar) or vmath.vector3(MAX_BAR_WIDTH, 15, 0)
+	end
+	self.text_spray = gui.get_node("text_spray")
+
+	-- Barra de stamina
+	self.stamina_bar = gui.get_node("stamina_bar_fill")
+	if self.stamina_bar then
+		self.stamina_original_size = gui.get_size(self.stamina_bar) or vmath.vector3(MAX_BAR_WIDTH, 10, 0)
+	end
+	self.text_stamina = gui.get_node("text_stamina")
+
+	-- Botón de reintentar (inicialmente oculto)
+	-- (btn_retry_img/text_retry son hijos del contenedor: la animación y el
+	-- texto se gestionan vía btn_retry_container, no necesitan handles propios).
+	-- El texto del botón SÍ necesita handle propio: el nodo text_retry declara
+	-- "Reintentar" en hud.gui y hay que sobreescribirlo con el texto localizado
+	-- (ui.btn_retry) en init y en refresh_hud_texts.
+	self.btn_retry_container = gui.get_node("btn_retry_container")
+	self.text_retry = gui.get_node("text_retry")
+	self.retry_hovering = false
+	if self.btn_retry_container then
+		gui.set_enabled(self.btn_retry_container, false)
+
+		-- Posicionar el botón más arriba para no tapar al jugador:
+		-- Usar 75% de la altura base de pantalla (768 * 0.75 = 576)
+		-- Esto es relativo y escalable a futuros cambios de resolución.
+		local BASE_WIDTH = 1280
+		local BASE_HEIGHT = 768
+		local btn_x = BASE_WIDTH * 0.5             -- Centrado horizontal
+		local btn_y = BASE_HEIGHT * 0.75            -- 75% desde abajo
+		gui.set_position(self.btn_retry_container, vmath.vector3(btn_x, btn_y, 0))
+	end
+
+	-- 🥫 Icono de comida de gato
+	self.box_icon_cat_food = gui.get_node("box_icon_cat_food")
+	if self.box_icon_cat_food then
+		gui.set_enabled(self.box_icon_cat_food, false)
+	end
+
+	-- 🪺 Icono + contador de insecticida (nidos, Fase 4): oculto hasta la 1ª
+	--    carga (patrón box_icon_cat_food, decisión NEST_SYSTEM_PLAN §8).
+	--    Se ocultan AMBOS nodos (icono y texto "x/2"): mostrar un "0/2" sin
+	--    icono sería ruido visual, igual que el "0/2" completo desde el inicio.
+	self.box_icon_poison = gui.get_node("box_icon_poison")
+	self.text_icon_poison = gui.get_node("text_icon_poison")
+	if self.box_icon_poison then
+		gui.set_enabled(self.box_icon_poison, false)
+	end
+	if self.text_icon_poison then
+		gui.set_enabled(self.text_icon_poison, false)
+	end
+
+	-- Nodo de alerta para el sistema de inventario
+	self.alert_node = gui.get_node("text_alert")
+	if self.alert_node then
+		gui.set_enabled(self.alert_node, false)
+	end
+
+	-- 📣 Estado del sistema de alertas (cola FIFO + temporizador único)
+	self.alert_queue = {}
+	self.alert_current = nil       -- texto visible actualmente (o nil)
+	self.alert_persistent = false  -- ¿la alerta visible es persistente?
+	self.alert_timer = 0           -- cuenta atrás de la alerta transitoria visible
+
+	-- 💀 Mensaje de derrota (fight_defeat): nil = no visible. Se muestra como
+	--    alerta PERSISTENTE (sin timeout) al morir y solo se oculta al pulsar
+	--    Reintentar / reaparecer (hide_defeat_alert).
+	self.defeat_alert_text = nil
+	self.defeat_cause = nil  -- 💀 causa de la última derrota ("car" | nil)
+
+	-- Nodos de estado del coleccionable
+	self.state_container = gui.get_node("box_icon_state_container")
+	self.state_icon = gui.get_node("box_icon_state")
+	self.state_collectible = gui.get_node("box_icon_state_collectible")
+
+	-- Ocultar contenedor de estado hasta que haya un objeto activo
+	if self.state_container then
+		gui.set_enabled(self.state_container, false)
+	end
+
+	-- Nodos del timer de exhibición (Timer A)
+	-- Creados en el editor por el usuario: pie_timer_to_exhibition, text_timer_to_exhibition
+	self.pie_timer = gui.get_node("pie_timer_to_exhibition")
+	self.text_timer = gui.get_node("text_timer_to_exhibition")
+	if self.pie_timer then
+		gui.set_enabled(self.pie_timer, false)
+	end
+	if self.text_timer then
+		gui.set_enabled(self.text_timer, false)
+	end
+
+	-- 🏬 Flag "Timer A activo": el objeto está depositado en la estantería y el
+	--    timer de almacén corre. Lo gestionan los mensajes update_timer_progress
+	--    (true) / hide_timer_progress (false) del inventory_manager. Distingue el
+	--    estado STORAGE "depositado" (timer corriendo) del STORAGE "restaurado
+	--    pero sin depositar" → lo usa el recordatorio pending_storage.
+	self.timer_a_running = false
+
+	-- 🛠️ Timer del NPC de restauración: cuenta atrás del cooldown tras
+	-- fallar su quiz de restauración.
+	-- Creados en el editor por el usuario: pie_timer_to_restoration, text_timer_to_restoration
+	self.pie_timer_restoration = gui.get_node("pie_timer_to_restoration")
+	self.text_timer_restoration = gui.get_node("text_timer_to_restoration")
+	if self.pie_timer_restoration then
+		gui.set_enabled(self.pie_timer_restoration, false)
+	end
+	if self.text_timer_restoration then
+		gui.set_enabled(self.text_timer_restoration, false)
+	end
+
+	-- 🐱 Timer del modo mascota (pie + icono dentro de box_pet_container)
+	-- Creados en el editor por el usuario: box_pet_container, pie_timer_pet, box_icon_pet
+	self.box_pet_container = gui.get_node("box_pet_container")
+	self.pie_timer_pet = gui.get_node("pie_timer_pet")
+	if self.box_pet_container then
+		-- Oculto e inactivo mientras el gato no está en modo mascota
+		gui.set_enabled(self.box_pet_container, false)
+	end
+
+	-- Cargar textos generales (para mostrar rangos/habilidades)
+	self.general_texts = text_loader.load("general") or {}
+
+	-- 🔁 Texto localizado del botón de reintentar (ui.btn_retry): el nodo
+	--    text_retry trae "Reintentar" por defecto en hud.gui y hay que
+	--    sobreescribirlo SIEMPRE con el idioma actual (si no, aparece en
+	--    español aunque se juegue en inglés).
+	if self.text_retry then
+		local ui = self.general_texts.ui or {}
+		gui.set_text(self.text_retry, ui.btn_retry or RETRY_FALLBACK_TEXT)
+	end
+
+	-- 🧑‍🤝‍🧑 Nombres localizados de personajes (categoría "main"): ya cargada y
+	--    cacheada por dialogue_manager/interactive en el arranque → cache hit.
+	--    Se usan para nombrar al NPC del recordatorio de re-intento (npc_retry).
+	self.characters = (text_loader.load("main") or {}).characters
+
+	-- ⏰ Recordatorios periódicos (text_alert): contadores + intervalos leídos
+	--    desde main/config.lua → M.balance (claves reminder_*, fuente única).
+	self.reminder_elapsed = {
+		new_material = 0,
+		pending_storage = 0,
+		no_exp = 0,
+		restorer_new = 0,
+		restorer_retry = 0,
+		npc_retry = 0,
+	}
+	load_reminder_config(self)
+
+	-- 🌐 Idioma actual cacheado: lo usa el POLLING de update_texts como red de
+	--    seguridad (ver refresh_hud_texts). NO se actualiza aquí dentro del
+	--    callback: si este muriera (GOTCHA #33) o el mensaje se perdiera, el
+	--    polling detectaría la diferencia y refrescaría igualmente.
+	self._lang = game_state.get_global("language") or "es"
+
+	-- 🌐 Cambio de idioma en caliente. ⚠️ GOTCHA #34: este callback se ejecuta
+	--    SÍNCRONO dentro del stack del script que llamó set_global (p. ej.
+	--    pause.gui_script al cambiar el idioma) → la escena GUI activa es la de
+	--    la pausa y cualquier gui.set_* sobre nodos del HUD lanza
+	--    "Node used in the wrong scene" (el callback moría y el primer cambio
+	--    no se aplicaba). Por eso aquí SOLO posteamos un mensaje al propio
+	--    HUD: los mensajes atraviesan set_time_step (ver MOBILE_CONTROLS_PLAN)
+	--    y on_message corre en la escena GUI correcta, donde sí se puede
+	--    tocar gui.
+	self.self_url = msg.url()
+	game_state.register_callback("language", function(var_name, old_lang, new_lang)
+		msg.post(self.self_url, "language_changed")
+	end)
+
+	-- Variables de parpadeo
+	self.blink_timer = 0
+	self.blink_visible = true
+	self.spray_blink_visible = true
+	self.spray_blink_timer = 0
+	self.stamina_blink_visible = true
+	self.stamina_blink_timer = 0
+	self.timer = 0
+	self.text_cache = {}
+
+	-- 🖥️ Overlay de FPS: el estado es PERSISTIDO (game_state → fps_overlay,
+	--    toggle del menú de pausa) con FPS_START_VISIBLE como primer arranque
+	--    (interruptor de build: false = no aparece nunca; un save existente
+	--    conserva su elección). La tecla F lo muestra/oculta en caliente
+	--    (input/game.input_binding → key_f) y también persiste el cambio.
+	--    (el nodo declara visible: true en hud.gui — ver GOTCHA #19).
+	self.fps_node = gui.get_node("text_fps_debug")
+	local fps_global = game_state.get_global("fps_overlay")
+	if fps_global == nil then
+		fps_global = FPS_START_VISIBLE
+		game_state.set_global("fps_overlay", fps_global)  -- persiste el primer arranque
+	end
+	self.fps_enabled = fps_global
+	self.fps_elapsed = 0
+	self.fps_frames = 0
+	-- 📊 Estado de las estadísticas de frame time (histograma + pico + ventana)
+	self.fps_hist = {}
+	for i = 1, FPS_HIST_BUCKETS do
+		self.fps_hist[i] = 0
+	end
+	self.fps_total_frames = 0
+	self.fps_peak_ms = 0
+	self.fps_window_elapsed = 0
+	if self.fps_node then
+		gui.set_enabled(self.fps_node, self.fps_enabled)
+		if self.fps_enabled then
+			gui.set_text(self.fps_node, "FPS ...")
+		end
+	end
+
+	msg.post(".", "acquire_input_focus")
+
+	update_texts(self)
+
+	-- Calcular contadores de periodo inicial (para partidas con progreso existente)
+	update_period_counts(self)
+
+	-- 🏷️ Etiqueta de la rejilla de periodos (texto localizado)
+	refresh_period_label(self)
+
+	-- Estado inicial del icono de comida de gato
+	if self.box_icon_cat_food then
+		local has_food = tonumber(game_state.get_global("cat_food_count") or 0) >= 1
+		gui.set_enabled(self.box_icon_cat_food, has_food)
+	end
+
+	-- 🪺 Estado inicial del icono de insecticida (nidos)
+	if self.box_icon_poison then
+		refresh_insecticide_icon(self)
+	end
+end
+
+-- 🖥️ Overlay de FPS (debug temporal): media móvil de FPS + ms por frame +
+--    memoria del proceso + pico y 1% low de frame time. Periodo de refresco
+--    del texto (0.5s suaviza los picos de frame time).
+local FPS_UPDATE_INTERVAL = 0.5
+
+-- 🧠 Memoria en MB: profiler.get_memory_usage() devuelve bytes. Protegido con
+--    pcall + type-check (GOTCHA #17: no asumir APIs del motor — si la función
+--    no existe en esta versión, la métrica se omite en vez de romper el overlay).
+local function get_memory_mb()
+	if not profiler or type(profiler.get_memory_usage) ~= "function" then
+		return nil
+	end
+	local ok, bytes = pcall(profiler.get_memory_usage)
+	if ok and type(bytes) == "number" and bytes > 0 then
+		return bytes / (1024.0 * 1024.0)
+	end
+	return nil
+end
+
+-- 📊 1% low: recorre el histograma desde el bucket peor (frame time más alto)
+--    hacia el mejor acumulando el 1% de frames más lentos; devuelve su FPS medio.
+local function compute_low_1pct(self)
+	if self.fps_total_frames < FPS_MIN_FRAMES_FOR_LOW then
+		return nil
+	end
+	local worst_count = math.max(1, math.floor(self.fps_total_frames * 0.01))
+	local frames_acc = 0
+	local fps_acc = 0
+	for i = FPS_HIST_BUCKETS, 1, -1 do
+		local n = self.fps_hist[i]
+		if n > 0 then
+			local take = math.min(n, worst_count - frames_acc)
+			-- bucket i ≈ frame times en [i-1, i) ms → FPS ≈ 1000/i (17ms → 58.8)
+			fps_acc = fps_acc + take * (1000.0 / i)
+			frames_acc = frames_acc + take
+			if frames_acc >= worst_count then
+				break
+			end
+		end
+	end
+	if frames_acc == 0 then
+		return nil
+	end
+	return fps_acc / frames_acc
+end
+
+-- Aplica el estado del overlay FPS (compartido por la tecla F y el toggle del
+-- menú de pausa): setea el flag, reinicia la sesión de medición y muestra/
+-- oculta el nodo.
+local function apply_fps_enabled(self, enabled)
+	self.fps_enabled = enabled
+	self.fps_elapsed = 0
+	self.fps_frames = 0
+	-- 📊 Reiniciar estadísticas de frame time (nueva sesión de medición)
+	self.fps_total_frames = 0
+	self.fps_peak_ms = 0
+	self.fps_window_elapsed = 0
+	for i = 1, FPS_HIST_BUCKETS do
+		self.fps_hist[i] = 0
+	end
+	if self.fps_node then
+		gui.set_enabled(self.fps_node, enabled)
+	end
+end
+
+local function toggle_fps(self)
+	apply_fps_enabled(self, not self.fps_enabled)
+	-- Persistir: el toggle de la tecla F y el del menú de pausa comparten el
+	-- mismo estado (fps_overlay) para que sobreviva a guardar/recargar.
+	game_state.set_global("fps_overlay", self.fps_enabled)
+	dprint("[HUD] Overlay FPS " .. (self.fps_enabled and "activado" or "desactivado") .. " (F)")
+end
+
+function update(self, dt)
+	-- 🖥️ Overlay FPS: la preferencia vive en game_state (fps_overlay; la cambia
+	--    el toggle del menú de pausa). Sincronizar por polling aquí — el patrón
+	--    establecido (igual que temp_units en update_climate_texts): el pause
+	--    GUI vive en bootstrap:/gui_library, este HUD en level_01, así que NO
+	--    se pueden mensajear con rutas "/gui#hud" desde bootstrap. Barato:
+	--    un lookup + comparación booleana por frame. Durante la pausa el
+	--    update está congelado → el cambio se aplica al reanudar.
+	local fps_global = game_state.get_global("fps_overlay")
+	if fps_global ~= nil and fps_global ~= self.fps_enabled then
+		apply_fps_enabled(self, fps_global)
+	end
+
+	-- ⏰ Recordatorios periódicos (text_alert): avisan cada X segundos mientras
+	--    el jugador tenga una acción pendiente (recoger material / exponer).
+	update_reminders(self, dt)
+
+	-- ⏱️ Alerta transitoria: temporizador ÚNICO (no se apilan timers; cada
+	--    alerta dura ALERT_DURATION completos y luego sigue la cola).
+	if self.alert_current and not self.alert_persistent then
+		self.alert_timer = self.alert_timer - dt
+		if self.alert_timer <= 0 then
+			alert_show_next(self)
+		end
+	end
+
+	-- 🖥️ Overlay de FPS: acumula dt y frames; refresca la media cada
+	--    FPS_UPDATE_INTERVAL segundos (FPS + ms + memoria + pico + 1% low).
+	--    Sin coste cuando está desactivado.
+	if self.fps_enabled and self.fps_node then
+		local ms_frame = dt * 1000.0
+		self.fps_elapsed = self.fps_elapsed + dt
+		self.fps_frames = self.fps_frames + 1
+
+		-- 📊 Histograma de frame times + pico de la ventana
+		local b = math.floor(ms_frame) + 1
+		if b > FPS_HIST_BUCKETS then
+			b = FPS_HIST_BUCKETS
+		end
+		self.fps_hist[b] = self.fps_hist[b] + 1
+		self.fps_total_frames = self.fps_total_frames + 1
+		if ms_frame > self.fps_peak_ms then
+			self.fps_peak_ms = ms_frame
+		end
+
+		-- Ventana deslizante: al cumplir FPS_STATS_WINDOW se reinician pico e
+		-- histograma (las métricas reflejan los últimos FPS_STATS_WINDOW segundos).
+		self.fps_window_elapsed = self.fps_window_elapsed + dt
+		if self.fps_window_elapsed >= FPS_STATS_WINDOW then
+			self.fps_window_elapsed = 0
+			self.fps_peak_ms = 0
+			self.fps_total_frames = 0
+			for i = 1, FPS_HIST_BUCKETS do
+				self.fps_hist[i] = 0
+			end
+		end
+
+		if self.fps_elapsed >= FPS_UPDATE_INTERVAL then
+			local fps = self.fps_frames / self.fps_elapsed
+			local ms = (self.fps_elapsed / self.fps_frames) * 1000.0
+			local mem_mb = get_memory_mb()
+			local low_fps = compute_low_1pct(self)
+			-- set_text_cached: solo actualiza el nodo si el texto cambió.
+			-- Partes opcionales: memoria (si la API existe) y 1% low (si hay
+			-- suficientes frames en la ventana) → línea compacta sin huecos.
+			-- Nota: FPS/ms son la media de la ventana corta (0.5s); pico y 1% low
+			-- reflejan la ventana de FPS_STATS_WINDOW (10s) — mezcla intencionada.
+			local parts = { string.format("FPS %.0f | %.2f ms", fps, ms) }
+			if mem_mb then
+				table.insert(parts, string.format("%.1f MB", mem_mb))
+			end
+			table.insert(parts, string.format("pico %.1f ms", self.fps_peak_ms))
+			if low_fps then
+				table.insert(parts, string.format("1%% %.0f fps", low_fps))
+			end
+			set_text_cached(self, "fps", self.fps_node, table.concat(parts, " | "))
+			self.fps_elapsed = 0
+			self.fps_frames = 0
+		end
+	end
+
+	self.timer = self.timer + dt
+
+	if self.timer >= UPDATE_INTERVAL then
+		self.timer = 0
+		update_texts(self)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🪺 ICONO Y CONTADOR DE INSECTICIDA (nidos, Fase 4)
+-- ═══════════════════════════════════════════════════════
+--   Muestra el contador "x/2" (text_icon_poison) bajo el icono box_icon_poison.
+--   El icono está OCULTO hasta la 1ª carga (decisión NEST_SYSTEM_PLAN §8,
+--   mismo patrón que box_icon_cat_food): el insecticida es un recurso raro
+--   que empieza en 0 — el icono aparece como recompensa al coger el primer
+--   bote. El máximo (insecticide_max) se lee de config.balance.nest con
+--   fallback, igual que en spray_can.script.
+function refresh_insecticide_icon(self)
+	local current = tonumber(game_state.get_global("nest_insecticide") or 0)
+	local max = (config.balance and config.balance.nest and config.balance.nest.insecticide_max) or 2
+
+	-- Contador "x/2" (solo se re-renderiza si el valor cambia)
+	if self.text_icon_poison then
+		set_text_cached(self, "insecticide", self.text_icon_poison, current .. "/" .. max)
+	end
+
+	-- Icono + contador visibles desde la 1ª carga (juntos: un "x/2" sin icono
+	--    no tiene sentido y un icono sin contador tampoco informa del tope)
+	if self.box_icon_poison then
+		gui.set_enabled(self.box_icon_poison, current >= 1)
+	end
+	if self.text_icon_poison then
+		gui.set_enabled(self.text_icon_poison, current >= 1)
+	end
+end
+
+function update_texts(self)
+	-- 🌐 Recargar textos si el idioma cambió (POLLING, red de seguridad del
+	--    callback — ver refresh_hud_texts): si game_state eliminó el callback
+	--    del HUD por un error puntual, text_period_label y el resto dejarían
+	--    de responder. Barato: un get_global + comparación por tick.
+	local lang = game_state.get_global("language") or "es"
+	if lang ~= self._lang then
+		self._lang = lang
+		refresh_hud_texts(self)
+	end
+
+	-- === BARRA DE SALUD ===
+	local health_value = tonumber(game_state.get_global("health") or 0)
+	local percentage = math.max(0, math.min(100, health_value))
+
+	if self.health_bar then
+		local new_width = MAX_BAR_WIDTH * (percentage / 100.0)
+		gui.set_size(self.health_bar, vmath.vector3(new_width, self.original_size.y, 0))
+
+		local bar_color = get_bar_color(percentage)
+		local is_critical = percentage < CRITICAL_THRESHOLD
+		update_blink_bar(self, "blink_timer", "blink_visible", is_critical, self.health_bar, bar_color)
+	end
+
+	-- Texto de porcentaje de salud (solo se actualiza si el texto cambia)
+	if self.text_nodes.health then
+		set_text_value_cached(self, "health", self.text_nodes.health, "%.1f%%", percentage)
+		local text_color
+		if percentage >= 70 then
+			text_color = COLOR_GREEN
+		elseif percentage >= 40 then
+			text_color = COLOR_YELLOW
+		elseif percentage >= 20 then
+			text_color = COLOR_ORANGE
+		else
+			text_color = COLOR_RED
+		end
+		gui.set_color(self.text_nodes.health, text_color)
+	end
+
+	-- === BARRA DE SPRAY ===
+	local spray_current = tonumber(game_state.get_global("spray_current") or 0)
+	local max_spray = tonumber(game_state.get_global("max_spray") or 100)
+	local spray_percentage = 0
+	if max_spray > 0 then
+		spray_percentage = math.max(0, math.min(100, (spray_current / max_spray) * 100))
+	end
+
+	if self.spray_bar then
+		local new_width = MAX_BAR_WIDTH * (spray_percentage / 100.0)
+		gui.set_size(self.spray_bar, vmath.vector3(new_width, self.spray_original_size.y, 0))
+
+		local bar_color = get_spray_bar_color(spray_percentage)
+		local is_critical = spray_percentage < SPRAY_CRITICAL_THRESHOLD
+		update_blink_bar(self, "spray_blink_timer", "spray_blink_visible", is_critical, self.spray_bar, bar_color)
+	end
+
+	-- Texto de porcentaje de spray (solo se actualiza si el texto cambia)
+	if self.text_spray then
+		set_text_value_cached(self, "spray", self.text_spray, "%.1f%%", spray_percentage)
+		if spray_percentage >= SPRAY_CRITICAL_THRESHOLD then
+			gui.set_color(self.text_spray, COLOR_BLUE_FULL)
+		else
+			gui.set_color(self.text_spray, COLOR_RED)
+		end
+	end
+
+	-- === BARRA DE STAMINA ===
+	local stamina_value = tonumber(game_state.get_global("stamina") or 100)
+	local stamina_pct = math.max(0, math.min(100, stamina_value))
+
+	if self.stamina_bar then
+		local new_width = MAX_BAR_WIDTH * (stamina_pct / 100.0)
+		gui.set_size(self.stamina_bar, vmath.vector3(new_width, self.stamina_original_size.y, 0))
+
+		local bar_color = get_bar_color(stamina_pct)
+		local is_critical = stamina_pct < CRITICAL_THRESHOLD
+		update_blink_bar(self, "stamina_blink_timer", "stamina_blink_visible", is_critical, self.stamina_bar, bar_color)
+	end
+
+	if self.text_stamina then
+		set_text_value_cached(self, "stamina", self.text_stamina, "%.1f%%", stamina_pct)
+		local text_color
+		if stamina_pct >= 70 then
+			text_color = COLOR_GREEN
+		elseif stamina_pct >= 40 then
+			text_color = COLOR_YELLOW
+		elseif stamina_pct >= 20 then
+			text_color = COLOR_ORANGE
+		else
+			text_color = COLOR_RED
+		end
+		gui.set_color(self.text_stamina, text_color)
+	end
+
+	-- Skills: mostrar rango textual en lugar de número
+	if self.text_nodes.skills then
+		local skills_value = tonumber(game_state.get_global("skills") or 1)
+		-- 🏅 Fallback NEUTRO (GOTCHA #20/37): si falta la traducción del rango,
+		-- mostrar el número sin etiqueta en español.
+		local rank_text = self.general_texts.ranks[skills_value] or tostring(skills_value)
+		set_text_cached(self, "skills", self.text_nodes.skills, rank_text)
+	end
+
+	-- 🏆 Progreso de tareas (Tareas: X/4)
+	if self.text_nodes.tasks_total then
+		local tc = tonumber(game_state.get_global("tasks_completed") or 0)
+		local label = (self.general_texts.inventory and self.general_texts.inventory.tasks_progress)
+			or "Tareas: %d/%d"
+		set_text_cached(self, "tasks", self.text_nodes.tasks_total,
+			string.format(label, tc, tasks.TASK_COUNT))
+	end
+
+	-- Total coleccionables: calcular desde inventory_core (sistema por ID)
+	if self.text_nodes.collectibles_items_total then
+		local items_status = game_state.get_global("inventory_items_status") or {}
+		local total = 0
+		for _, state in pairs(items_status) do
+			if state == "completed" then
+				total = total + 1
+			end
+		end
+		set_text_tostring_cached(self, "collectibles", self.text_nodes.collectibles_items_total, total)
+	end
+
+	-- Resto de textos (tareas, etc.) — solo los que cambian por game_state
+	for _, var_name in ipairs(TASK_TEXT_VARS) do
+		local node = self.text_nodes[var_name]
+		if node then
+			local value = game_state.get_global(var_name) or 0
+			set_text_tostring_cached(self, var_name, node, value)
+		end
+	end
+
+	-- === 🥫 ICONO DE COMIDA DE GATO ===
+	if self.box_icon_cat_food then
+		local has_food = tonumber(game_state.get_global("cat_food_count") or 0) >= 1
+		gui.set_enabled(self.box_icon_cat_food, has_food)
+	end
+
+	-- === 🪺 ICONO DE INSECTICIDA (nidos) ===
+	if self.box_icon_poison then
+		refresh_insecticide_icon(self)
+	end
+
+	-- === 🌡️ TEMPERATURA Y HUMEDAD ===
+	update_climate_texts(self)
+
+	-- 🛠️ TIMER DEL NPC DE RESTAURACIÓN
+	update_restoration_timer(self)
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🌡️ ACTUALIZAR TEXTOS DE CLIMA (TEMPERATURA / HUMEDAD)
+-- ═══════════════════════════════════════════════════════
+
+function update_climate_texts(self)
+	local temp_raw = tonumber(game_state.get_global("temp_raw") or 21.0)
+	local hr_raw = tonumber(game_state.get_global("hr_raw") or 50.0)
+	local warning_level = tonumber(game_state.get_global("climate_warning_level") or 0)
+
+	-- Determinar color según warning_level
+	local climate_color
+	if warning_level == 0 then
+		climate_color = COLOR_GREEN   -- OK: dentro de rango ideal
+	elseif warning_level == 1 then
+		climate_color = COLOR_ORANGE  -- Mejorando: fuera de rango pero tendencia ↓
+	else
+		climate_color = COLOR_RED     -- Empeorando: fuera de rango y tendencia ↑
+	end
+
+	-- Temperatura (solo se actualiza si el texto cambia). La UNIDAD es una
+	--    preferencia del jugador (game_state → temp_units: "c"/"f", toggle en
+	--    el menú de pausa), no del idioma. La conversión es SOLO visual: la
+	--    simulación, los umbrales y los avisos de color siguen calculándose en
+	--    °C. Las etiquetas viven en general_text → M.ui.temp_unit_c/f.
+	--    set_text_cached compara la cadena formateada (valor + unidad) →
+	--    re-renderiza también al cambiar la unidad, no solo el valor.
+	if self.text_temperature then
+		local use_f = (game_state.get_global("temp_units") or "c") == "f"
+		local ui = (self.general_texts and self.general_texts.ui) or {}
+		local unit_label = use_f and (ui.temp_unit_f or "°F") or (ui.temp_unit_c or "°C")
+		local display_temp = temp_raw
+		if use_f then
+			display_temp = temp_raw * 9.0 / 5.0 + 32.0
+		end
+		set_text_cached(self, "temperature", self.text_temperature, string.format("%.1f%s", display_temp, unit_label))
+		gui.set_color(self.text_temperature, climate_color)
+	end
+
+	-- Humedad (solo se actualiza si el texto cambia)
+	if self.text_humity then
+		set_text_value_cached(self, "humidity", self.text_humity, "%.1f%%", hr_raw)
+		gui.set_color(self.text_humity, climate_color)
+	end
+end
+
+-- ═══════════════════════════════════════════════════════
+-- 🛠️ TIMER DEL NPC DE RESTAURACIÓN — PIE TIMER
+-- ═══════════════════════════════════════════════════════
+-- Cuenta atrás del cooldown de 60s tras fallar el quiz de restauración.
+-- Polling a 10Hz (update_texts) leyendo game_state: el cooldown es
+-- wall-clock (os.time) y persiste en el savegame, así que el pie se
+-- recupera correctamente tras guardar/recargar (a diferencia del aviso
+-- proactivo del dialogue_manager, que vive en RAM). Solo se muestra si hay
+-- pieza en RESTORATION — el mismo gate del quiz del NPC de restauración en
+-- npc.script (tipo quiz_restoration) —
+-- y el cooldown está activo. Sin pieza pendiente no hay cuenta atrás.
+function update_restoration_timer(self)
+	if not (self.pie_timer_restoration and self.text_timer_restoration) then return end
+
+	-- 🛠️ El NPC de quiz de restauración se identifica por tipo (npc_spawn_state);
+	-- sin NPC registrado de ese tipo (nil) no hay cooldown que mostrar.
+	local restorer_npc_id = npc_spawn_state.find_npc_by_type(npc_spawn_state.NPC_TYPE_QUIZ_RESTORATION)
+	if not restorer_npc_id then
+		gui.set_enabled(self.pie_timer_restoration, false)
+		gui.set_enabled(self.text_timer_restoration, false)
+		return
+	end
+
+	-- ¿Pieza activa en RESTORATION? (string de estado del core, el mismo
+	-- que usa STATE_ICONS en update_hud_state).
+	local items_status = game_state.get_global("inventory_items_status") or {}
+	local current_item_id = game_state.get_global("inventory_current_item_id")
+	local remaining = 0
+	if current_item_id and items_status[current_item_id] == "restoration" then
+		remaining = game_state.get_npc_cooldown_remaining(restorer_npc_id)
+	end
+
+	if remaining <= 0 then
+		gui.set_enabled(self.pie_timer_restoration, false)
+		gui.set_enabled(self.text_timer_restoration, false)
+		return
+	end
+
+	gui.set_enabled(self.pie_timer_restoration, true)
+	gui.set_enabled(self.text_timer_restoration, true)
+
+	-- Ángulo del pie: 360 = lleno, 0 = vacío (cooldown recién iniciado → lleno)
+	local total = game_state.RESTORER_COOLDOWN_SECONDS or 60
+	local progress = math.max(0, math.min(1, remaining / total))
+	gui.set_fill_angle(self.pie_timer_restoration, 360 * progress)
+
+	-- Texto: "Restauradora disponible en: MM:SS" (solo actualiza si cambia)
+	local minutes = math.floor(remaining / 60)
+	local seconds = math.floor(remaining % 60)
+	local label = (self.general_texts.inventory and self.general_texts.inventory.timer_restoration_label)
+		or "Restauradora disponible en:"
+	set_text_cached(self, "restoration_timer", self.text_timer_restoration, label .. " " .. string.format("%d:%02d", minutes, seconds))
+end
+
+-- ============================================
+-- INPUT HANDLER (compartido entre on_input directo y forwarding)
+-- ============================================
+
+local function handle_input(self, action_id, action)
+	if not self.btn_retry_container then return end
+	if not gui.is_enabled(self.btn_retry_container) then
+		self.retry_hovering = false
+		return
+	end
+
+	-- Detectar hover (action_id == nil para movimientos del ratón)
+	if action_id == nil then
+		local hovering = gui.pick_node(self.btn_retry_container, action.x, action.y)
+		if hovering ~= self.retry_hovering then
+			self.retry_hovering = hovering
+			animate_retry_hover(self, hovering)
+		end
+	end
+
+	-- Detectar click
+	if (action_id == hash("touch") or action_id == hash("click")) and action.pressed then
+		if gui.pick_node(self.btn_retry_container, action.x, action.y) then
+			-- Ocultar el botón inmediatamente
+			hide_retry_button(self)
+
+			-- Notificar al jugador para que haga respawn
+			msg.post("/player", "respawn_player")
+
+			dprint("[HUD] Botón Reintentar clickeado. Enviando respawn al jugador.")
+		end
+	end
+end
+
+-- ============================================
+-- MANEJO DE MENSAJES
+-- ============================================
+
+function on_message(self, message_id, message, sender)
+	-- Forwarded input events desde scene_manager
+	if message_id == hash("input_event") then
+		-- 🖥️ Overlay de FPS: toggle con la tecla F. Esta es la vía real: dentro
+		--    del proxy level_01 el focus directo no llega (el scene_manager
+		--    reenvía todo el input a /gui#hud).
+		if message.pressed and message.action_id == hash("key_f") then
+			toggle_fps(self)
+			return
+		end
+		handle_input(self, message.action_id, message)
+		return
+	end
+
+	if message_id == hash("show_retry_button") then
+		show_retry_button(self)
+
+		-- 💀 Mensaje de derrota en text_alert SIN timeout: es una alerta
+		--    PERSISTENTE (alert_persistent = true, sin cuenta atrás en update)
+		--    que solo desaparece al pulsar Reintentar (hide_defeat_alert vía
+		--    hide_retry_button). La causa de la muerte (message.cause, enviada
+		--    por player.script) discrimina el texto: "car" → car_defeat;
+		--    resto (plagas) → fight_defeat. Fallbacks en cascada.
+		self.defeat_cause = message.cause
+		local defeat_text = get_defeat_text(self)
+		self.defeat_alert_text = defeat_text
+		alert_enqueue(self, defeat_text, true)
+	elseif message_id == hash("hide_retry_button") then
+		hide_retry_button(self)
+		hide_defeat_alert(self)
+
+	-- ═══════════════════════════════════════════════════════
+	-- 📦 MENSAJES DEL INVENTORY MANAGER
+	-- ═══════════════════════════════════════════════════════
+	elseif message_id == hash("update_hud_state") then
+		-- Actualizar el HUD con el estado de un objeto coleccionable
+		local item_id = message.item_id
+		local state = message.state
+		local sprite_id = message.sprite_id
+
+		-- Mapeo de estados a texturas en el atlas GUI
+		local STATE_ICONS = {
+			pickup      = "icon_state_hand",
+			-- 🛠️ COLLECTED (recogido sin depositar, Timer A no iniciado): mismo
+			-- icono que STORAGE — el objeto va camino del almacén. Sin esta
+			-- entrada, el HUD mostraba el icono de pickup tras recoger objetos
+			-- que no requieren restauración (fallback a icon_state_hand).
+			collected   = "icon_state_storage",
+			restoration = "icon_state_restoration",
+			storage     = "icon_state_storage",
+			exhibition  = "icon_state_exhibition",
+			completed   = "icon_state_hand",
+		}
+
+		if self.state_container then
+			if state then
+				-- Mostrar contenedor y actualizar iconos
+				gui.set_enabled(self.state_container, true)
+
+				-- Icono del objeto (desde exhibition_clic atlas)
+				if self.state_collectible and sprite_id then
+					gui.play_flipbook(self.state_collectible, hash(sprite_id))
+				end
+
+				-- Icono del estado (desde gui atlas)
+				if self.state_icon then
+					local icon_name = STATE_ICONS[state] or "icon_state_hand"
+					gui.play_flipbook(self.state_icon, hash(icon_name))
+				end
+			else
+				-- Sin objeto activo (todos completados) → ocultar contenedor
+				gui.set_enabled(self.state_container, false)
+			end
+		end
+
+		-- Recalcular contadores de periodo (cambio de estado confirmado)
+		update_period_counts(self)
+		
+		dprint("[HUD] Estado actualizado: " .. tostring(item_id) .. " → " .. tostring(state))
+
+	elseif message_id == hash("show_alert") then
+		-- 📣 Alerta transitoria con cola FIFO (ver sistema de alertas arriba).
+		--    message.replace = true → reemplazo inmediato (hover posicional,
+		--    p. ej. títulos de estanterías).
+		if message.replace == true then
+			-- 🗣️ Los replace (hover posicional) NO se difieren: son efímeros y
+			--    los re-afirma su emisor cada frame.
+			alert_enqueue(self, message.text, false, true)
+		else
+			-- 🗣️ Durante un diálogo/quiz con un NPC (game_state.dialog_active)
+			--    los avisos puntuales se ENCOLAN en vez de mostrarse: el diálogo
+			--    tiene prioridad visual y los avisos se verán al cerrarlo,
+			--    respetando la cola FIFO.
+			alert_enqueue(self, message.text, false, false, game_state.get_dialog_active())
+		end
+
+		-- 🔊 Aviso sonoro suave OPCIONAL (message.alert_sound = true, p. ej. el
+		--    aviso proactivo de la restauradora tras el cooldown). Mismo sonido
+		--    que los recordatorios periódicos (smooth_notification, grupo sfx).
+		--    Se omite durante un diálogo/quiz: el aviso se encola y se verá al
+		--    cerrar la interacción, pero el sonido no debe interrumpirla.
+		if message.alert_sound and not game_state.get_dialog_active() then
+			sound.play(REMINDER_SOUND_URL)
+		end
+
+	-- ═══════════════════════════════════════════════════════
+	-- 🖱️ ALERTA PERSISTENTE (para hover de muebles)
+	-- ═══════════════════════════════════════════════════════
+	elseif message_id == hash("show_persistent_alert") then
+		-- Muestra texto sin auto-hide (para hover info); prioridad sobre las
+		-- transitorias: el transitorio visible vuelve al frente de la cola.
+		alert_enqueue(self, message.text, true)
+
+	elseif message_id == hash("hide_persistent_alert") then
+		-- Oculta la alerta persistente y reanuda el siguiente de la cola
+		if self.alert_current and self.alert_persistent then
+			alert_show_next(self)
+		end
+
+	-- ═══════════════════════════════════════════════════════
+	-- ⏱️ TIMER A: PROGRESO DE EXHIBICIÓN (PIE TIMER)
+	-- ═══════════════════════════════════════════════════════
+	elseif message_id == hash("update_timer_progress") then
+		-- 🏬 Timer A activo → el objeto está depositado en la estantería.
+		--    El flag lo consume el recordatorio pending_storage.
+		self.timer_a_running = true
+		local remaining = message.remaining or 0
+		local progress = message.progress or 0
+
+		if self.pie_timer and self.text_timer then
+			-- Mostrar nodos (si estaban ocultos)
+			gui.set_enabled(self.pie_timer, true)
+			gui.set_enabled(self.text_timer, true)
+
+			-- Ángulo del pie: 360 = lleno, 0 = vacío
+			local fill_angle = 360 * math.max(0, math.min(1, progress))
+			gui.set_fill_angle(self.pie_timer, fill_angle)
+
+			-- Texto: "Para vitrina: MM:SS"
+			local minutes = math.floor(remaining / 60)
+			local seconds = math.floor(remaining % 60)
+			local label = (self.general_texts.inventory and self.general_texts.inventory.timer_exhibition_label) or "Para vitrina:"
+			local time_str = string.format("%d:%02d", minutes, seconds)
+			gui.set_text(self.text_timer, label .. " " .. time_str)
+		end
+
+	elseif message_id == hash("hide_timer_progress") then
+		-- Ocultar el pie timer (timer expiró, objeto completado, o reset)
+		self.timer_a_running = false
+		if self.pie_timer then
+			gui.set_enabled(self.pie_timer, false)
+		end
+		if self.text_timer then
+			gui.set_enabled(self.text_timer, false)
+		end
+
+	-- ═══════════════════════════════════════════════════════
+	-- 🐱 TIMER DEL MODO MASCOTA (PIE TIMER)
+	-- ═══════════════════════════════════════════════════════
+	-- Mismo modelo que el timer de exhibición: el pie se vacía 360° → 0°
+	-- según el progreso (remaining / pet_duration). Emisor: cat.script.
+	elseif message_id == hash("update_pet_timer") then
+		local progress = message.progress or 0
+
+		if self.pie_timer_pet then
+			-- Mostrar el contenedor (pie + icono) si estaba oculto
+			if self.box_pet_container then
+				gui.set_enabled(self.box_pet_container, true)
+			end
+
+			-- Ángulo del pie: 360 = lleno, 0 = vacío
+			local fill_angle = 360 * math.max(0, math.min(1, progress))
+			gui.set_fill_angle(self.pie_timer_pet, fill_angle)
+		end
+
+	elseif message_id == hash("hide_pet_timer") then
+		-- Ocultar el timer del modo mascota (fin del PET o reset del gato)
+		if self.box_pet_container then
+			gui.set_enabled(self.box_pet_container, false)
+		end
+
+	-- ═══════════════════════════════════════════════════════
+	-- 🌐 CAMBIO DE IDIOMA EN CALIENTE
+	-- ═══════════════════════════════════════════════════════
+	-- GOTCHA #34: el callback de game_state NO puede tocar gui (se ejecuta
+	-- dentro del stack de quien llamó set_global, p. ej. la pausa → "Node used
+	-- in the wrong scene"). Este on_message corre en la escena GUI del HUD,
+	-- donde los gui.set_* sí son válidos. Refresco completo: general+main,
+	-- text_period_label, alertas del idioma anterior, derrota persistente y
+	-- textos dependientes (skills, tasks_total). El polling de update_texts
+	-- queda como red de seguridad (mensaje perdido o callback eliminado).
+	elseif message_id == hash("language_changed") then
+		self._lang = game_state.get_global("language") or "es"
+		refresh_hud_texts(self)
+		update_texts(self)
+
+	end
+end
+
+-- ============================================
+-- INPUT: HOVER Y CLICK DEL BOTÓN REINTENTAR
+-- ============================================
+
+function on_input(self, action_id, action)
+	-- 🖥️ Overlay de FPS: toggle con la tecla F. Ruta directa (fallback; dentro
+	--    del proxy level_01 el focus directo no se dispara, la vía real es el
+	--    input_event reenviado por scene_manager).
+	if action.pressed and action_id == hash("key_f") then
+		toggle_fps(self)
+		return
+	end
+	handle_input(self, action_id, action)
+end
+
+function final(self)
+	msg.post(".", "release_input_focus")
+end

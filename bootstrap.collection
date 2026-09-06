@@ -1,0 +1,54 @@
+name: "bootstrap"
+instances {
+  id: "main_loader"
+  prototype: "/main/main_loader.go"
+}
+instances {
+  id: "proxy_intro"
+  prototype: "/main/proxy_intro.go"
+}
+instances {
+  id: "proxy_level_01"
+  prototype: "/main/proxy_level_01.go"
+}
+instances {
+  id: "audio_manager"
+  prototype: "/main/audio_manager.go"
+}
+scale_along_z: 0
+embedded_instances {
+  id: "gui_library"
+  data: "components {\n"
+  "  id: \"library\"\n"
+  "  component: \"/gui/library.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"pause\"\n"
+  "  component: \"/gui/pause.gui\"\n"
+  "}\n"
+  ""
+}
+embedded_instances {
+  id: "gui_web_controls"
+  data: "components {\n"
+  "  id: \"web_controls\"\n"
+  "  component: \"/gui/web_controls.gui\"\n"
+  "}\n"
+  ""
+}embedded_instances {
+  id: "gui_victory"
+  data: "components {\n"
+  "  id: \"victory\"\n"
+  "  component: \"/gui/victory.gui\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"mouse_click\"\n"
+  "  component: \"/assets/sounds/mouse-click.sound\"\n"
+  "}\n"
+  "components {\n"
+  "  id: \"end_game_victory\"\n"
+  "  component: \"/assets/sounds/end_game_victory.sound\"\n"
+  "}\n"
+  ""
+}
+
