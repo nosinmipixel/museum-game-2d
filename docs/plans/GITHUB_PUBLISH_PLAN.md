@@ -19,13 +19,13 @@
 | **Repo nuevo vs fork** | **Repo nuevo** | Un fork implica contribuir de vuelta al repo original (PRs). Aquí el código es 100 % distinto (Python → Lua) y solo se comparte nombre/temática/parte de assets. El mismo usuario (`nosinmipixel`) no puede tener dos repos con el mismo nombre. |
 | **Nombre del repo** | **`museum-game-2d`** | Variante clara que distingue la versión (2D/Defold) del original (3D/UPBGE). URL: `https://nosinmipixel.github.io/museum-game-2d/` |
 | **Licencia** | **GPL-3.0** (código) + **CC BY-NC-SA 4.0** (assets heredados) | Coherencia con el repo original: código GPLv3 + assets CC BY-NC-SA 4.0 (ver §4). |
-| **Despliegue** | **CI con GitHub Actions** | Cada push a `main` compila con `bob` y publica automáticamente. Repo limpio (sin 366 MB de build), builds reproducibles, sin límite de builds por hora. |
+| **Despliegue** | **CI con GitHub Actions** | Cada push a `main` compila con `bob` y publica automáticamente. Repo limpio (sin ~600 MB de build local), builds reproducibles, sin límite de builds por hora. |
 
 ## 3. Auditoría del estado actual (local)
 
 Datos verificados directamente en el proyecto:
 
-- **El proyecto NO es aún un repositorio git** (pendiente `git init` + primer commit).
+- ✅ **Repositorio git activo** — `git init` hecho (rama `main`), remoto `origin` = `git@github.com:nosinmipixel/museum-game-2d.git`, proyecto publicado en GitHub (identidad local: `Ángel Sánchez <nosinmipixel@users.noreply.github.com>`).
 - ✅ **`.gitignore` ya existe** (excluye `build/`, `.internal/`, `*.xcf`, `*.pxo`, IDEs, certificados) → decisión del §6.3 resuelta.
 - ✅ **`.gitattributes` ya existe**.
 - `game.project`:
@@ -35,10 +35,10 @@ Datos verificados directamente en el proyecto:
   - **Sin extensiones nativas** → bob en CI no necesita `--email/--auth`.
   - **Sin dependencias de librerías** → `resolve` es trivial.
 - **Tamaños:**
-  - Fuente (sin `build/`): ~97 MB (de los cuales `assets/` ≈ 89 MB, incluye `.xcf` de GIMP >5 MB)
-  - Build HTML5 local completo: **~366 MB** en `build/default_html5/`
-  - **Contenido desplegable real: ~39 MB** en `build/default_html5/__htmlLaunchDir/` (verificado Sept. 2026; mejor que la estimación inicial de ~70 MB)
-- **Estructura del build desplegable** (verificado):
+  - Fuente (sin `build/`): ~90 MB (de los cuales `assets/` ≈ 26 MB; los `.xcf`/`.pxo` ya no están en el árbol de trabajo)
+  - Carpeta `build/` local completa: **~606 MB** (builds del editor + wasm-web; excluida del repo vía `.gitignore`)
+  - **Contenido desplegable real: ~38.5 MB** (verificado Sept. 2026; mejor que la estimación inicial de ~70 MB)
+- **Estructura del build desplegable del editor** (verificado):
   ```
   __htmlLaunchDir/
     build_input_data.json
@@ -50,7 +50,7 @@ Datos verificados directamente en el proyecto:
       archive/                       ← gameN.arcd de 2 MB (chunks)
   ```
 - `index.html` usa **rutas relativas** (`src="dmloader.js"`) → compatible con el subpath de Pages (`/museum-game-2d/`). ✅
-- **Versión del motor:** sha1 `f735c12192bf95684e6ae1ae27c400b8170fc6d8` (Defold 1.13.0) — presente en `build_input_data.json`.
+- **Versión del motor:** Defold **1.13.1** — sha1 `574678c7d44be490d874fbed2d0ae6211feec4d9`, fijado en `DEFOLD_SHA` (`.github/workflows/deploy.yml`). Procedimiento de sincronización con el editor: ver §5.4.
 - **Controles** (input binding): flechas **y WASD**, Espacio (spray), R (reset dev), P (pausa), ESC, TAB (inventario), clic izq. (interactuar), clic der. (spray), touch.
 
 ## 4. Licencias del proyecto original (a respetar)
@@ -78,14 +78,14 @@ Fuente: `docs/ASSETS_LICENSE.md` del repo UPBGE (https://github.com/nosinmipixel
 ### 5.2 Límites de GitHub Pages (verificados)
 - **1 GB** por repo (recomendado) y **1 GB** por sitio publicado.
 - **100 MB por archivo** (bloqueo); aviso desde ~50 MB. Los chunks `gameN.arcd` de 2 MB no suponen problema. ✅
-- **~100 GB/mes** de ancho de banda gratuito (soft limit). Un build de ~70 MB descargado por muchas personas se agota rápido → conviene optimizar tamaño (ver §6).
+- **~100 GB/mes** de ancho de banda gratuito (soft limit). Un build de ~38.5 MB descargado por muchas personas se agota rápido → conviene optimizar tamaño (ver §6).
 - **Repo público obligatorio** en plan gratuito (los repos privados con Pages requieren plan de pago).
 - **Saves en HTML5:** Defold mapea el savegame a `localStorage` del navegador del visitante → se pierde al limpiar datos o en incógnito. Sin backend. Es el comportamiento esperado.
 
 ### 5.3 Build headless con `bob` (verificado)
 - `bob.jar` se descarga de `https://d.defold.com/archive/<sha1>/bob/bob.jar` (URL verificada: responde **HTTP 200** con el sha1 del proyecto; el alias `stable` NO existe → hay que fijar el sha1).
 - **Requiere OpenJDK 25** (según manual oficial de bob).
-- Comando: `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out` ⚠️ (ver corrección más abajo: `js-web` ya no existe en Defold 1.13.0)
+- Comando (estado actual): `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --variant debug --archive resolve build bundle --bundle-output bundle_out` (el `--variant debug` es obligatorio, ver §5.4; el histórico de correcciones está más abajo)
 - La plantilla `[html5] htmlfile` del `game.project` se aplica igual en CI headless. ✅
 - ⚠️ **CORRECCIÓN (Sept. 2026, tras el primer fallo de CI):** la plataforma web correcta es **`wasm-web`** — `js-web` fue renombrada y bob 1.13.0 falla con `Platform js-web not supported`. Además, la estructura `__htmlLaunchDir` solo la genera el **editor**: con bob por CLI la salida de `bundle` va a `build/default/<título>/`; con `--bundle-output bundle_out` es determinista: `bundle_out/<título>/`. Comando correcto:
   `java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out`
@@ -115,7 +115,7 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 
 ## 6. Riesgos y consideraciones
 
-1. **Tamaño del build (~39 MB desplegable, verificado Sept. 2026 — antes se estimaban ~70 MB):** sigue siendo el principal factor de descarga inicial, pero ya razonable para Pages. Los atlas grandes (`.texturec` de 32 MB en atlas quiz/exhibition) y `custom_resources = /assets` siguen siendo sospechosos de inflar el build. **Optimización futura sugerida** (no bloqueante, prioridad baja): compresión de texturas en `game.project`, revisar `custom_resources`. *(Los `.xcf` ya quedan fuera vía `.gitignore`.)*
+1. **Tamaño del build (~38.5 MB desplegable, verificado Sept. 2026 — antes se estimaban ~70 MB):** sigue siendo el principal factor de descarga inicial, pero ya razonable para Pages. Los atlas grandes de texturas (quiz/exhibition) y `custom_resources = /assets` siguen siendo sospechosos de inflar el build. **Optimización futura sugerida** (no bloqueante, prioridad baja): compresión de texturas en `game.project`, revisar `custom_resources`. *(Los `.xcf` ya quedan fuera vía `.gitignore`.)*
 2. **Carpeta con espacios** (`Top Down Museum Game/`) en la ruta del build → comillas obligatorias en el workflow.
 3. ✅ **RESUELTO:** los `.xcf` (y `.pxo`) se excluyen vía `.gitignore`; solo se versionan los PNG exportados.
 4. **Doble licencia:** el README debe declarar GPL-3.0 + CC BY-NC-SA 4.0 con la atribución de §4, y conviene incluir `docs/ASSETS_LICENSE.md` y `docs/AI_DISCLOSURE.md` propios.
@@ -156,19 +156,19 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 
 ### Fase B — CI + GitHub Pages
 7. ✅ **Crear `.github/workflows/deploy.yml`** — **hecho**, con 3 correcciones tras el primer fallo de CI: plataforma `wasm-web` (no `js-web`), salida determinista `--bundle-output bundle_out` y actions actualizadas (checkout v7, setup-java v6, pages v5).
-8. ✅ **Probar localmente el comando de bob** — **hecho (Sept. 2026)**: build OK en `build/default_html5/__htmlLaunchDir/Top Down Museum Game/` con `index.html`, `dmloader.js`, wasm y `archive/`. Desplegable: **~39 MB**. Aplanado: copiar el subdirectorio del título a `public/`.
+8. ✅ **Probar localmente el comando de bob** — **hecho (Sept. 2026)**: con `--bundle-output` la salida es determinista en `bundle_out/<título>/` con `index.html`, `dmloader.js`, wasm y `archive/`. Desplegable: **~38.5 MB**. Aplanado: copiar el subdirectorio del título a `public/`. (La estructura `__htmlLaunchDir` solo la genera el editor.)
 9. ✅ **Crear el repo en GitHub:** `museum-game-2d`, **público** — **hecho** (push vía SSH con deploy key `cachyos-defold`).
 10. ✅ **Push** a `main` — **hecho** (el workflow se dispara en cada push).
 11. ✅ **Activar GitHub Pages:** Source: **GitHub Actions** — **hecho**.
-12. ✅ **Verificar** la URL — **hecho**: `index.html`, `TopDownMuseumGame.wasm` y chunks `archive/gameN.arcd` responden HTTP 200. Pendiente solo la comprobación visual del usuario en el navegador.
+12. ✅ **Verificar** la URL — **hecho**: `index.html`, `TopDownMuseumGame.wasm` y chunks `archive/gameN.arcd` responden HTTP 200, y el usuario ha verificado la jugabilidad completa en navegador (incógnito, Sept. 2026).
 
 ### Fase C — Pulido (opcional, posterior)
 13. ⬜ (opcional) Optimización de tamaño del build (§6.1): revisar si `custom_resources = /assets` arrastra archivos innecesarios al archive y aplicar compresión de texturas a los atlas grandes. *(Los `.xcf` ya quedan fuera por `.gitignore`; desplegable actual ~39 MB → prioridad baja.)*
 14. ⬜ Enlazar el repo nuevo desde el README del repo original (referencia cruzada) y viceversa.
 
-## 8. Workflow de despliegue (esqueleto validado en B.8; pendiente de crear el archivo)
+## 8. Workflow de despliegue (referencia — el archivo real y activo es `.github/workflows/deploy.yml`)
 
-> ✅ **Estructura validada en Fase B.8 (Sept. 2026):** la salida real de bob es `build/default_html5/__htmlLaunchDir/<título>/` (⚠️ no `build/default/…`). El paso de aplanado localiza `__htmlLaunchDir` dinámicamente, sin rutas hardcodeadas.
+> ✅ **Estructura validada (Sept. 2026):** el **editor** escribe en `build/default_html5/__htmlLaunchDir/<título>/`; bob por CLI escribe en `build/default/<título>/`, o en `<bundle-output>/<título>/` si se usa `--bundle-output` (salida determinista, la que usa el workflow). El paso de aplanado copia el contenido del subdirectorio del título a `public/`.
 
 ```yaml
 name: Build & Deploy HTML5 a GitHub Pages
@@ -188,18 +188,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # SHA1 del motor Defold del proyecto (build_input_data.json). Actualizar al cambiar de editor.
-  DEFOLD_SHA: f735c12192bf95684e6ae1ae27c400b8170fc6d8
+  # SHA1 del motor Defold. Debe coincidir con el editor (procedimiento en §5.4).
+  DEFOLD_SHA: 574678c7d44be490d874fbed2d0ae6211feec4d9
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup OpenJDK 25 (requisito de bob)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '25'
@@ -207,8 +207,8 @@ jobs:
       - name: Descargar bob.jar (URL verificada, fijada al sha1 del proyecto)
         run: curl -fsSL -o bob.jar "https://d.defold.com/archive/${{ env.DEFOLD_SHA }}/bob/bob.jar"
 
-      - name: Compilar HTML5 (wasm-web + archive)
-        run: java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --archive resolve build bundle --bundle-output bundle_out
+      - name: Compilar HTML5 (wasm-web + archive, variante debug)
+        run: java --enable-native-access=ALL-UNNAMED -jar bob.jar --platform wasm-web --variant debug --archive resolve build bundle --bundle-output bundle_out
 
       - name: Aplanar salida para que index.html quede en la raiz
         run: |
@@ -221,7 +221,7 @@ jobs:
           ls -la public/
 
       - name: Subir artefacto Pages
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: public
 
@@ -234,7 +234,7 @@ jobs:
     steps:
       - name: Desplegar en GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 ```
 
 > Alternativa validable: imagen Docker oficial `defold/bob` (`docker run --rm -v "$(pwd):/project" -w /project defold/bob --platform wasm-web --archive resolve build bundle --bundle-output bundle_out`) en lugar de descargar `bob.jar` + JDK. *(bob.jar + JDK probado con éxito en local; la imagen Docker queda como alternativa.)*
@@ -246,10 +246,11 @@ jobs:
 - [x] `LICENSE` GPL-3.0 + `docs/ASSETS_LICENSE.md` (CC BY-NC-SA 4.0 + atribución) + `docs/AI_DISCLOSURE.md` (versiones EN/ES)
 - [x] Comando de bob probado localmente (misma versión/sha1 que CI) — ⚠️ corregido: plataforma `wasm-web` + `--bundle-output bundle_out` (salida: `bundle_out/<título>/`)
 - [x] YAML del workflow validado (`yaml-lint`; `actionlint` no disponible en el sistema) antes del push
-- [x] `.github/workflows/deploy.yml` activo — CI en verde (run #2: build + deploy, 49 s)
+- [x] `.github/workflows/deploy.yml` activo — CI en verde (build + deploy ~46 s, `--variant debug`)
 - [x] Repo `museum-game-2d` público creado y `push` a `main` (deploy key SSH)
 - [x] Pages → Source: GitHub Actions
-- [x] URL `https://nosinmipixel.github.io/museum-game-2d/` funcionando (HTTP 200 en index/wasm/archive; comprobar consola del navegador al jugar)
+- [x] Respaldo de despliegue manual: `deploy_pages.sh` → rama `gh-pages` (probado; alternativo si el CI falla)
+- [x] URL `https://nosinmipixel.github.io/museum-game-2d/` funcionando (HTTP 200 en index/wasm/archive) — ✅ jugabilidad verificada por el usuario en navegador (incógnito, Sept. 2026)
 - [ ] (Opcional) Optimización de tamaño del build — desplegable actual ~39 MB, prioridad baja
 
 ---

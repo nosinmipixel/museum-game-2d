@@ -81,7 +81,7 @@ All project documentation lives in [`docs/`](docs/):
 
 ## 🛠️ Local development
 
-1. Open the project with the **Defold editor** (v1.13.0, sha1 `f735c12192bf95684e6ae1ae27c400b8170fc6d8`).
+1. Open the project with the **Defold editor** (v1.13.1, sha1 `574678c7d44be490d874fbed2d0ae6211feec4d9`).
 2. Resolution: 1280×768 · 60 fps.
 
 Headless HTML5 build with `bob` (requires OpenJDK 25):
