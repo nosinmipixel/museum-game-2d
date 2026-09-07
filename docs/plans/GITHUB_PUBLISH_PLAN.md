@@ -110,7 +110,8 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 - `main/go_id_registry.lua` (GENERADO, no editar): registra `hash(ruta) → ruta` en runtime para las ~220 instancias de las colecciones — `hash()` de Lua produce valores idénticos en ambas variantes.
 - `tools/generate_go_id_registry.py`: regenera el registro; **ejecutar tras añadir/renombrar instancias** en cualquier `.collection`.
 - Los scripts resuelven ids vía registro con fallback al parseo de tostring (que sigue funcionando en DEBUG): `npc.script`, `doors.script` (además usa el id del propio componente via `msg.url().fragment`, estable por tipo), `exhibition_object.script`, `zone_alert.script`, `bookcase.script`, `inventory_manager.script` (claves de slots idénticas al formato de guardado anterior → partidas compatibles), `slot_furniture.script` (mapas hash→string en vez de `hash_to_str`), `cat.script` (detección de puertas). Ver GOTCHA #45 en `docs/DEV_GOTCHAS.md`.
-- **Consecuencia:** la variante release vuelve a ser válida para producción; el CI puede abandonar `--variant debug` (wasm ~2.39 MB vs ~2.87 MB) una vez verificado el build release arreglado.
+- **Segunda causa (Sept. 2026):** `dialogue_manager.init()` llamaba `profiler.enable_ui()` sin guardia — el namespace `profiler` no existe en release → init() crasheaba en silencio y `dialog_data` quedaba nil → sin conversaciones NPC. Guardia aplicada (mismo patrón que `hud.gui_script`).
+- **Consecuencia (APLICADA):** la variante release es la válida para producción — el CI ya NO usa `--variant debug` (wasm ~2.39 MB vs ~2.87 MB, ~470 KB menos). Verificado en incógnito sobre build release local.
 
 **Procedimiento al actualizar el editor Defold** (mantener CI y editor sincronizados):
 
@@ -269,4 +270,4 @@ jobs:
 - [ ] (Opcional) Optimización de tamaño del build — desplegable actual ~39 MB, prioridad baja
 
 ---
-*Última actualización: Septiembre 2026 — **PUBLICADO y estable**: causa raíz REAL confirmada (uso de `tostring(hash)` solo válido en debug — §5.4/§5.5, fix con registro reverso de ids); bug reportado y confirmado por Defold en #13125.*
+*Última actualización: Septiembre 2026 — **PUBLICADO y estable**: dos causas reales resueltas (uso de `tostring(hash)` y llamada sin guardia al `profiler`, ambas solo-debug — §5.4/§5.5, GOTCHA #45); CI compilando la variante RELEASE; bug confirmado por Defold en #13125.*

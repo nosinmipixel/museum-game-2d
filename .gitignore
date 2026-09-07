@@ -48,3 +48,6 @@ desktop.ini
 # Instrucciones para agentes de IA (opcional: si se quieren versionar, borrar estas dos líneas)
 AGENTS.md
 CLAUDE.md
+
+# Logs locales del engine (write_log / editor)
+log.txt

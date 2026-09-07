@@ -283,8 +283,9 @@ function init(self)
 	self.npc_id_string = id_registry.name_of(go.get_id(), "npc_01")
 
 	-- 🎯 Registrar la URL REAL del NPC para el spawn manager
-	--    (GOTCHA #4: go.get_id() devuelve la ruta completa; nunca adivinar
-	--     rutas anidadas como /level2/npcs/npc_01)
+	--    (⚠️ corrección v2: los hijos NO anidan el path del padre en su id —
+	--     el id real es "/npc_01", no "/level2/npcs/npc_01" como decía la
+	--     nota antigua; verificado con el tostring del debug, Sept. 2026)
 	npc_spawn_state.register_npc(self.npc_id_string, go.get_id())
 
 	-- 🧩 Registrar el TIPO del NPC para que dialogue_manager / HUD /

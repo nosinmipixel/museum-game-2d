@@ -264,8 +264,15 @@ function init(self)
 		game_state.init_default_npc_progress()
 		dprint("🔧 DEV_MODE: Progreso de NPCs reiniciado para desarrollo")
 	end
-	profiler.enable_ui(false)
-	profiler.set_ui_view_mode(profiler.VIEW_MODE_MINIMIZED)
+	-- 🧠 Profiler UI: SOLO en debug — en release las funciones del profiler no
+	--    existen y este init() crasheaba aquí en silencio (la consola de release
+	--    está vacía) → dialog_data quedaba a nil → ningún NPC iniciaba
+	--    conversación (defold/defold#13125, causa 2). Mismo patrón de guardia
+	--    que hud.gui_script (uso de profiler.get_memory_usage).
+	if profiler and profiler.enable_ui and profiler.set_ui_view_mode then
+		profiler.enable_ui(false)
+		profiler.set_ui_view_mode(profiler.VIEW_MODE_MINIMIZED)
+	end
 
 	self.active = false
 	self.current_npc = nil
@@ -387,6 +394,7 @@ function start_conversation(self, npc_id)
 	local narrative = self.dialog_data and self.dialog_data.narrative
 	local block_name = npc_id .. "_attempt" .. attempt
 	local narrative_block = narrative and narrative[block_name]
+
 
 	-- 💬 CHARLA DE AMBIENTE (bibliotecaria, guardia y futuros NPCs):
 	--    cuando el NPC no tiene bloque _attemptN (no tiene quiz), se buscan

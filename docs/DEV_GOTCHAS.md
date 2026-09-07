@@ -1838,12 +1838,30 @@ Con `{ all = true }` el resultado es una lista de TODOS los hits ordenados por d
 los NPCs aparecen mal posicionados, las puertas no abren, la exhibición/inventario
 falla y las zonas muestran claves crudas — **sin un solo error en consola**.
 
-**Causa:** Defold mantiene una tabla reverse-hash (hash → string original) **solo en
-builds DEBUG**. En RELEASE `tostring(hash)`/`tostring(go.get_id())` devuelve un valor
-opaco sin la ruta. Todo script que parseara ese string (`npc.script`, `doors.script`,
+**Causa 1 — strings de hash solo en debug:** Defold mantiene una tabla reverse-hash
+(hash → string original) **solo en builds DEBUG**. En RELEASE `tostring(hash)` /
+`tostring(go.get_id())` devuelve `<unknown:DEC>` (formato verificado empíricamente),
+sin la ruta. Todo script que parseara ese string (`npc.script`, `doors.script`,
 `exhibition_object.script`, `zone_alert.script`, `bookcase.script`,
 `inventory_manager.script`, `cat.script`) fallaba en silencio. Confirmado por los
 maintainers de Defold en [defold/defold#13125](https://github.com/defold/defold/issues/13125).
+
+**Causa 2 — namespace `profiler` solo en debug:** `dialogue_manager.init()` llamaba
+`profiler.enable_ui()` sin guardia. En release las funciones del profiler no existen
+→ init() crasheaba en silencio ANTES de cargar los textos → `dialog_data` quedaba a
+nil → ningún NPC iniciaba conversación (el gato funcionaba porque no usa diálogos).
+La guardia correcta ya existía en `hud.gui_script`; aplicada también en
+`dialogue_manager.script`.
+
+**Síntoma compartido:** el editor (builds DEBUG) NUNCA mostró ninguno de los dos
+fallos — solo los expone la variante release. Sin errores en consola (en release
+la consola del navegador está VACÍA; ver docs "Debugging - game and system logs").
+
+**Nota v2 sobre rutas de GO:** los GOs hijos **NO anidan** el path del padre en su
+id (`children:` es solo jerarquía de transform): el id de un NPC hijo de
+level2→npcs es "/npc_01", no "/level2/npcs/npc_01". El anidado solo aplica a
+sub-colecciones (este proyecto no usa ninguna). El registro generado (v2) emite
+rutas planas "/<id>".
 
 **Reglas:**
 1. **NUNCA usar `tostring()` de un hash/url para lógica** (ids, tipos, claves de
@@ -1851,7 +1869,7 @@ maintainers de Defold en [defold/defold#13125](https://github.com/defold/defold/
 2. **Resolver el nombre de un GO** con `main/go_id_registry.lua`
    (`id_registry.path_of(go.get_id())` / `name_of(...)`), generado por
    `python3 tools/generate_go_id_registry.py` — **regenerar tras añadir/renombrar
-   instancias en las colecciones**.
+   instancias en las colecciones**. Rutas SIEMPRE planas "/<id>" (ver nota v2).
 3. **Comparar hashes con `==` o usarlos como claves de tabla** (válido en ambas
    variantes). Los mapas `*_STR` (`SLOT_TYPE_STR`, `PERIOD_STR`, `BOOK_TYPE_TO_STR`)
    son release-safe.
@@ -1859,6 +1877,9 @@ maintainers de Defold en [defold/defold#13125](https://github.com/defold/defold/
    receptor deba "des-hashar".
 5. El **id del propio componente** (`msg.url().fragment`) es una identidad estable y
    comparable por hash — patrón usado por `doors.script` para el tipo de puerta.
+6. **Proteger APIs de debug** (`profiler`, etc.) con guardias tipo
+   `if profiler and profiler.enable_ui then ... end` — un crash en `init()` es
+   invisible en release (consola vacía) y deja el script "medio inicializado".
 
 ---
 
