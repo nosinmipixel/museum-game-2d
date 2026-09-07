@@ -1829,3 +1829,37 @@ Con `{ all = true }` el resultado es una lista de TODOS los hits ordenados por d
 ---
 
 *Última actualización: Agosto 2026*
+
+---
+
+## GOTCHA #45 — `tostring(hash)` solo funciona en DEBUG (variante release)
+
+**Síntoma:** el juego funciona perfecto en el editor (builds DEBUG) pero en release
+los NPCs aparecen mal posicionados, las puertas no abren, la exhibición/inventario
+falla y las zonas muestran claves crudas — **sin un solo error en consola**.
+
+**Causa:** Defold mantiene una tabla reverse-hash (hash → string original) **solo en
+builds DEBUG**. En RELEASE `tostring(hash)`/`tostring(go.get_id())` devuelve un valor
+opaco sin la ruta. Todo script que parseara ese string (`npc.script`, `doors.script`,
+`exhibition_object.script`, `zone_alert.script`, `bookcase.script`,
+`inventory_manager.script`, `cat.script`) fallaba en silencio. Confirmado por los
+maintainers de Defold en [defold/defold#13125](https://github.com/defold/defold/issues/13125).
+
+**Reglas:**
+1. **NUNCA usar `tostring()` de un hash/url para lógica** (ids, tipos, claves de
+   guardado) — solo para logs de debug.
+2. **Resolver el nombre de un GO** con `main/go_id_registry.lua`
+   (`id_registry.path_of(go.get_id())` / `name_of(...)`), generado por
+   `python3 tools/generate_go_id_registry.py` — **regenerar tras añadir/renombrar
+   instancias en las colecciones**.
+3. **Comparar hashes con `==` o usarlos como claves de tabla** (válido en ambas
+   variantes). Los mapas `*_STR` (`SLOT_TYPE_STR`, `PERIOD_STR`, `BOOK_TYPE_TO_STR`)
+   son release-safe.
+4. **En mensajes, enviar strings** (ya convertidos vía mapa) en vez de hashes que el
+   receptor deba "des-hashar".
+5. El **id del propio componente** (`msg.url().fragment`) es una identidad estable y
+   comparable por hash — patrón usado por `doors.script` para el tipo de puerta.
+
+---
+
+*Última actualización: Septiembre 2026*

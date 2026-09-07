@@ -30,6 +30,7 @@ go.property("book_visual", hash(""))
 local text_loader = require "main.text_loader"
 local config = require "main.config"
 local game_state = require "main.game_state"
+local id_registry = require "main.go_id_registry" -- 🚨 nombre real del GO sin reverse-hash (solo existe en DEBUG)
 
 -- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
 --    true  = loguea cuando M.DEBUG esté activo
@@ -74,15 +75,14 @@ function init(self)
 
 	-- Extraer book_type del nombre del objeto si es posible
 	-- Formato esperado: "bookcase_pal", "bookcase_neo", etc.
-	-- El ID puede venir como "[/bookcase_pal#bookcase]" o "/bookcase_pal"
-	local id_str = tostring(go.get_id())
-	dprint("[Bookcase] ID crudo: " .. id_str)
-	-- Buscar _sufijo antes de # o ] (formato URL: [/bookcase_pal#bookcase])
-	local suffix = id_str:match("_(%w+)[#%]]")
-	if not suffix then
-		-- Fallback: buscar al final (para IDs sin fragmento)
-		suffix = id_str:match("_(%w+)$")
-	end
+	-- 🚨 Release-safe (defold/defold#13125): tostring(go.get_id()) solo devuelve
+	--    la ruta en DEBUG; el registro la resuelve con hash() de Lua (idéntico
+	--    en release). Sin esto, en release TODAS las estanterías caen al default
+	--    "pal" (visual y títulos equivocados).
+	local go_name = id_registry.name_of(go.get_id(), "")
+	dprint("[Bookcase] Nombre GO: " .. go_name)
+	-- Buscar _sufijo al final del nombre (bookcase_pal → "pal")
+	local suffix = go_name:match("_(%w+)$")
 	if suffix then
 		self.book_type = hash(suffix)
 		dprint("[Bookcase] Tipo detectado del nombre: " .. suffix)

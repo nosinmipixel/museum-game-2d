@@ -1,7 +1,20 @@
 # Bug report — Defold (github.com/defold/defold)
 
 > **✅ SUBMITTED:** https://github.com/defold/defold/issues/13125 (Sept. 2026)
-> This file is the original draft, kept as stable evidence and for cross-referencing.
+> **✅ RESOLVED (project-side, Sept. 2026):** the maintainers identified the actual
+> root cause — the game relied on `tostring(hash)` (e.g. `tostring(go.get_id())`),
+> which only returns the original string in **debug** builds; in **release** the
+> engine's reverse-hash table is stripped and the string comes back as an opaque
+> value. The release engine variant itself was never broken — it was silently
+> exposing a latent, debug-only dependency in our code. Every system in the report
+> (NPCs, doors, exhibition, texts, furniture slots) parsed ids that way.
+> **Fix implemented in this repo:** generated reverse-hash registry
+> (`main/go_id_registry.lua` + `tools/generate_go_id_registry.py`) plus per-script
+> fixes (see `docs/DEV_GOTCHAS.md`, GOTCHA #45). The release variant is now valid
+> for production builds.
+> This file is the original draft, kept as stable evidence and for cross-referencing
+> (the sections below describe the symptoms accurately; the "WebGPU hypothesis" in
+> Additional context #3 did NOT apply).
 > **How it was submitted:** via https://github.com/defold/defold/issues/new?template=bug_report.md,
 > pasting the sections below as is.
 

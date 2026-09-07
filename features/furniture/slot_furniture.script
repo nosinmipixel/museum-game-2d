@@ -186,7 +186,11 @@ function apply_hover_tint(self)
 	end
 
 	local item_period = game_state.get_global("inventory_current_item_period")
-	local slot_period_str = collectibles_data.hash_to_str(self.period)
+	-- 🚨 Release-safe (defold/defold#13125): hash_to_str(self.period) depende del
+	--    reverse-hash del engine (solo DEBUG) → en release el periodo salía como
+	--    basura y el tint de acierto era siempre rojo. PERIOD_STR compara hashes
+	--    por valor → válido en ambas variantes.
+	local slot_period_str = PERIOD_STR[self.period] or collectibles_data.hash_to_str(self.period)
 
 	if item_period == slot_period_str then
 		-- Periodo correcto: tint verde luminoso
@@ -213,7 +217,7 @@ end
 
 function show_hover_alert(self)
 	local is_active = game_state.get_global("inventory_current_item_active")
-	local period_key = collectibles_data.hash_to_str(self.period)
+	local period_key = PERIOD_STR[self.period] or collectibles_data.hash_to_str(self.period)
 
 	-- 🌐 Textos localizados (general_text_[lan].lua → M.inventory). El nombre
 	--    del periodo en texto es el localizado; display_name de

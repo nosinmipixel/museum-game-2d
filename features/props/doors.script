@@ -60,6 +60,7 @@ go.property("use_open_collision", false)  -- true → al abrir, la colisión se 
 local config = require "main.config"
 local component_utils = require "main.component_utils"
 local interactable_box = require "main.interactable_box"
+local id_registry = require "main.go_id_registry" -- 🚨 nombre real del GO sin reverse-hash (solo existe en DEBUG)
 -- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
 local DEBUG_DOORS = false
 local dprint = config.make_log(DEBUG_DOORS)
@@ -139,18 +140,41 @@ local INTERACT_OFFSET = {
 	door_service = vmath.vector3(0, -5, 0),     -- BOX 60×100 en y−5
 }
 
+-- 🚨 Release-safe (defold/defold#13125): tostring(hash) solo devuelve el
+--    string original en builds DEBUG (reverse-hash del engine); en release
+--    devuelve basura y el prefijo salía corrupto → puertas sin animación ni
+--    apertura. Doble resolución válida en ambas variantes:
+--      1. id del PROPIO COMPONENTE script (msg.url().fragment): cada prototipo
+--         door_*.go nombra su script "door_front"/"door_side"/"door_service"
+--         (estable por tipo incluso en copias door_side1, door_front3...).
+--      2. Registro generado de rutas (main/go_id_registry.lua) + limpieza del
+--         sufijo numérico (door_side10 → door_side).
+local DOOR_TYPES = { "door_front", "door_side", "door_service" }
+local COMPONENT_TO_TYPE = {}
+for _, t in ipairs(DOOR_TYPES) do
+	COMPONENT_TO_TYPE[hash(t)] = t
+end
+
 local function detect_door_prefix()
-	-- tostring(go.get_id()) produce algo como "[/furniture/door_front]"
-	-- o "[/door_front1]". Extraemos el contenido entre corchetes,
-	-- el último segmento tras '/', y eliminamos el sufijo numérico
-	-- para que las copias (door_front1, door_side1) usen las mismas
-	-- animaciones que el original (door_front, door_side, etc.).
+	-- 1) Fragmento del componente (hash → comparación por valor, release-safe).
+	--    Cubre también el caso (teórico) de fragment como string.
+	local url = msg.url()
+	local by_component = COMPONENT_TO_TYPE[url.fragment]
+		or (type(url.fragment) == "string" and COMPONENT_TO_TYPE[hash(url.fragment)])
+	if by_component then
+		return by_component
+	end
+	-- 2) Registro de rutas generado desde las colecciones.
+	local name = id_registry.name_of(go.get_id())
+	if name then
+		-- Eliminar sufijo numérico: door_front1 → door_front, door_side1 → door_side
+		return name:gsub("%d+$", "")
+	end
+	-- 3) Último recurso: parseo del tostring (solo fiable en DEBUG).
 	local id_str = tostring(go.get_id())
 	local clean = id_str:match("%s*%[%s*(.-)%s*%]") or id_str
 	local prefix = clean:match("([^/]+)$") or "door_front"
-	-- Eliminar sufijo numérico: door_front1 → door_front, door_side1 → door_side
-	prefix = prefix:gsub("%d+$", "")
-	return prefix
+	return prefix:gsub("%d+$", "")
 end
 
 -- ═══════════════════════════════════════════════════════

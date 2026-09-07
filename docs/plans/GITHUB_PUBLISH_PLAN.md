@@ -1,6 +1,6 @@
 # 🚀 Plan de publicación en GitHub — Versión Defold (2D/Lua)
 
-> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Despliegue activo. **Divergencia CLI/editor RESUELTA** (causa raíz: variante *release* del motor rompe el gameplay, ver §5.4). El CI vuelve a estar activo con `--variant debug`, que produce un motor byte-idéntico al del editor. Queda solo Fase C (opcional).
+> **Documento de análisis + plan de acción.** Estado: **PUBLICADO ✅** (Sept. 2026) — Despliegue activo. **Divergencia CLI/editor RESUELTA — causa raíz REAL confirmada (Sept. 2026): el juego dependía de `tostring(hash)`, que solo devuelve el string original en builds DEBUG (reverse-hash del engine); en release devuelve basura** (ver §5.4 y §5.5). Los maintainers de Defold lo confirmaron en [defold/defold#13125](https://github.com/defold/defold/issues/13125). La variante release del motor NUNCA estuvo rota. Fix: registro reverso de ids (`main/go_id_registry.lua`, generado por `tools/generate_go_id_registry.py`). Tras verificar el build release arreglado, el CI puede volver a la variante release (wasm ~470 KB más ligero).
 > Decisiones tomadas por el usuario: **repo nuevo** `museum-game-2d` · licencia **GPL-3.0** · despliegue **CI con GitHub Actions**.
 
 ---
@@ -102,16 +102,31 @@ Tras actualizar a Defold **1.13.1** (sha `574678c7d44be490d874fbed2d0ae6211feec4
 | release (CLI) | editor | ❌ roto |
 | debug (editor) | CLI | ✅ **funcionaba** |
 
-**Conclusión: el culpable es la variante *release* del motor wasm**, no el empaquetado del archive (absuelto) ni el modo pthread (absuelto: el bundle release sin COOP/COEP —monohilo forzado— también fallaba). Hipótesis a reportar a Defold: el motor release usa el backend **WebGPU** (ambos wasm lo incluyen; el debug fuerza el camino WebGL, donde el juego funciona). Investigación adicional suspuesta: el juego no declara `is_debug` ni condicionales de variante en Lua.
+**Conclusión inicial (incorrecta):** se atribuyó el fallo a la variante *release* del motor wasm. La matriz A/B era real, pero la interpretación no: el patrón observado (todo bundle con motor debug funciona, todo bundle con motor release falla) tenía otra explicación — ver §5.5.
 
-**Solución aplicada:** el editor siempre empaqueta la variante **debug** — su wasm es **byte-idéntico** (md5 verificado) a `bob --variant debug`. El workflow de CI usa esa variante y reproduce exactamente el build que funciona.
+**⚡ CAUSA RAÍZ REAL (confirmada por los maintainers de Defold en [defold/defold#13125](https://github.com/defold/defold/issues/13125), Sept. 2026):** el juego usaba `tostring(hash)`/`tostring(go.get_id())` para resolver nombres de objetos. En builds **DEBUG** el engine conserva una tabla reverse-hash y el tostring devuelve el string original (`[/furniture/door_front]`); en **RELEASE** esa tabla se elimina y devuelve un valor opaco sin la ruta. Todo sistema que identificaba objetos por su nombre de GO fallaba en silencio: NPCs (spawn manager no los posicionaba), puertas (prefijo de animación corrupto), objetos de exhibición, zonas, estanterías, slots de inventario. El editor nunca lo destapó porque **siempre empaqueta debug**.
+
+**Solución aplicada (release-safe):**
+- `main/go_id_registry.lua` (GENERADO, no editar): registra `hash(ruta) → ruta` en runtime para las ~220 instancias de las colecciones — `hash()` de Lua produce valores idénticos en ambas variantes.
+- `tools/generate_go_id_registry.py`: regenera el registro; **ejecutar tras añadir/renombrar instancias** en cualquier `.collection`.
+- Los scripts resuelven ids vía registro con fallback al parseo de tostring (que sigue funcionando en DEBUG): `npc.script`, `doors.script` (además usa el id del propio componente via `msg.url().fragment`, estable por tipo), `exhibition_object.script`, `zone_alert.script`, `bookcase.script`, `inventory_manager.script` (claves de slots idénticas al formato de guardado anterior → partidas compatibles), `slot_furniture.script` (mapas hash→string en vez de `hash_to_str`), `cat.script` (detección de puertas). Ver GOTCHA #45 en `docs/DEV_GOTCHAS.md`.
+- **Consecuencia:** la variante release vuelve a ser válida para producción; el CI puede abandonar `--variant debug` (wasm ~2.39 MB vs ~2.87 MB) una vez verificado el build release arreglado.
 
 **Procedimiento al actualizar el editor Defold** (mantener CI y editor sincronizados):
 
 1. Actualizar el editor, abrir el proyecto y probar el juego en local (no actualizar `DEFOLD_SHA` si el juego falla en el editor).
 2. Obtener el sha1 del nuevo motor en https://github.com/defold/defold/releases — línea `Channel=stable sha1: …` de la versión correspondiente.
 3. Actualizar `DEFOLD_SHA` en `.github/workflows/deploy.yml` (es la única línea a cambiar) y hacer push a `main` — el CI recompila y despliega automáticamente.
-4. **Punto de control obligatorio tras cualquier cambio de motor:** el `TopDownMuseumGame.wasm` del build debe pesar **~2.87 MB** (variante debug) y NO debe existir `TopDownMuseumGame_pthread.wasm` en la salida. Si pesa ~2.4 MB, la variante release se ha colado → gameplay roto (ver tabla de diagnóstico anterior).
+4. **Punto de control tras cualquier cambio de motor:** verificar el gameplay completo (NPCs, puertas, exhibición, inventario) tanto en el editor como en un build release de bob. ⚠️ Regla de oro: **nunca usar `tostring(hash)`/`tostring(go.get_id())` para lógica** — solo para logs de debug (GOTCHA #45); usar `main/go_id_registry.lua`.
+
+### 5.5 Regla del proyecto: hashes y variante release (GOTCHA #45)
+
+- `hash` es unidireccional en release: `tostring(hash("x"))`/`tostring(go.get_id())` solo devuelven el string original en builds DEBUG.
+- ❌ NUNCA: parsear/comparar el resultado de `tostring()` de un hash o url para lógica (ids, tipos, claves de guardado).
+- ✅ Resolver nombres de GO: `id_registry.path_of(go.get_id())` / `id_registry.name_of(...)` (`main/go_id_registry.lua`, generado).
+- ✅ Comparar hashes con `==` o usarlos como claves de tabla (válido en ambas variantes).
+- ✅ En mensajes, enviar **strings** (mapas `*_STR` tipo `SLOT_TYPE_STR`) en vez de hashes que el receptor convierta con `tostring`.
+- Regenerar el registro tras tocar colecciones: `python3 tools/generate_go_id_registry.py`.
 
 ## 6. Riesgos y consideraciones
 
@@ -254,4 +269,4 @@ jobs:
 - [ ] (Opcional) Optimización de tamaño del build — desplegable actual ~39 MB, prioridad baja
 
 ---
-*Última actualización: Septiembre 2026 — **PUBLICADO y estable**: causa raíz de la divergencia CLI/editor identificada (variante release del motor, §5.4) y CI reactivado con `--variant debug`.*
+*Última actualización: Septiembre 2026 — **PUBLICADO y estable**: causa raíz REAL confirmada (uso de `tostring(hash)` solo válido en debug — §5.4/§5.5, fix con registro reverso de ids); bug reportado y confirmado por Defold en #13125.*

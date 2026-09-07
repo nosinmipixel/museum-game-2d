@@ -26,6 +26,7 @@ local WARMUP_TIME = 0.15
 local screen_utils = require "main.screen_utils"
 local component_utils = require "main.component_utils"
 local config = require "main.config"
+local id_registry = require "main.go_id_registry" -- 🚨 ruta real del GO sin reverse-hash (solo existe en DEBUG)
 
 -- 🔧 DEBUG granular (sistema make_log, ver main/config.lua):
 --    true  = loguea cuando M.DEBUG esté activo
@@ -37,10 +38,14 @@ function init(self)
 	self.timer = 0
 	self.is_warmed_up = false
 
-	-- 📌 Extraer nombre real del GO (para tracking de posición)
-	local id_string_raw = tostring(go.get_id())
-	local clean_path = id_string_raw:match("%s*%[%s*(.-)%s*%]") or id_string_raw
-	self.go_name = clean_path:match("([^/]+)$") or "unknown"
+	-- 📌 Ruta/nombre real del GO (para tracking de posición). 🚨 Release-safe
+	--    (defold/defold#13125): tostring(go.get_id()) solo devuelve la ruta en
+	--    DEBUG; el registro la resuelve con hash() de Lua (idéntico en release).
+	--    go_path es ABSOLUTA ("/exhibition_objects/ME_16061") → el manager puede
+	--    construir msg.url válida para seguir la posición del panel.
+	self.go_path = id_registry.path_of(go.get_id())
+		or (tostring(go.get_id()):match("%s*%[%s*(.-)%s*%]") or tostring(go.get_id()))
+	self.go_name = self.go_path:match("([^/]+)$") or "unknown"
 
 	-- 📌 ID del objeto: si custom_id > 0, lo usa directamente.
 	--    Si no, lo extrae del nombre del GO (para ME_16061, ME_45681, etc.)
@@ -159,7 +164,7 @@ function on_message(self, message_id, message, sender)
 			object_id = self.object_id_string,
 			screen_pos = screen_pos,
 			world_pos = world_pos,
-			game_object_id = self.go_name,
+			game_object_id = self.go_path or self.go_name,
 			anchor_offset = half_sprite_h
 		})
 

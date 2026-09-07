@@ -24,6 +24,7 @@
 local text_loader = require "main.text_loader"
 local game_state = require "main.game_state"
 local config = require "main.config"
+local id_registry = require "main.go_id_registry" -- 🚨 nombre real del GO sin reverse-hash (solo existe en DEBUG)
 
 -- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
 local DEBUG_ZONE_ALERT = false
@@ -51,9 +52,9 @@ end
 function init(self)
 	-- La clave de la sala se auto-detecta desde el id del GO:
 	-- zone_intake → room_intake (debe existir en M.locations).
-	local id_raw = tostring(go.get_id())
-	local clean = id_raw:match("%s*%[%s*(.-)%s*%]") or id_raw
-	local full_name = clean:match("([^/]+)$") or "zone_intake"
+	-- 🚨 Release-safe (defold/defold#13125): el nombre del GO se resuelve vía
+	--    registro (tostring(go.get_id()) solo devuelve la ruta en DEBUG).
+	local full_name = id_registry.name_of(go.get_id(), "zone_intake")
 	self.room_key = "room_" .. (full_name:match("^zone_(.+)$") or full_name)
 
 	load_room_name(self)

@@ -29,6 +29,7 @@ local text_loader = require "main.text_loader"
 local patrol = require "features.npc.npc_patrol"
 local nav = require "features.cat.cat_nav"
 local npc_spawn_state = require "main.npc_spawn_state"
+local id_registry = require "main.go_id_registry" -- 🚨 ruta real del GO sin reverse-hash (solo existe en DEBUG)
 
 -- 🔧 DEBUG [GATO]: cambiar a true para activar los logs del gato.
 --    Respeta el kill-switch global M.DEBUG (main/config.lua).
@@ -555,7 +556,16 @@ local PET_TARGET_SWITCH_FACTOR = 0.7
 --    (door_main NO bloquea el hueco: su colisión solo cubre el marco, así que
 --    la estela del jugador nunca puede quedar bloqueada por ella.)
 local function is_door_object(other_id)
-	return other_id ~= nil and tostring(other_id):find("door_") ~= nil
+	if other_id == nil then return false end
+	-- 🚨 Release-safe (defold/defold#13125): tostring(hash) solo devuelve la ruta
+	--    en DEBUG. Vía registro, la ruta real ("/furniture/door_side10") contiene
+	--    "door_" para cualquier puerta; enemigos spawneados por factory no están
+	--    en el registro → caen al fallback (comportamiento idéntico al de debug).
+	local path = id_registry.path_of(other_id)
+	if path then
+		return path:find("door_", 1, true) ~= nil
+	end
+	return tostring(other_id):find("door_") ~= nil
 end
 
 -- Detiene el ronroneo si estaba sonando y resetea su timer de relanzado

@@ -25,6 +25,7 @@ local screen_utils = require "main.screen_utils"
 local text_loader = require "main.text_loader"
 local config = require "main.config"
 local npc_spawn_state = require "main.npc_spawn_state" -- 🛠️ URL de la restauradora (icono de disponibilidad)
+local id_registry = require "main.go_id_registry" -- 🚨 ruta real del GO sin reverse-hash (solo existe en DEBUG)
 
 -- 🔧 DEBUG [INVENTARIO]: cambiar a true para activar los logs del gestor de inventario.
 --    Respeta el kill-switch global M.DEBUG (main/config.lua).
@@ -645,7 +646,14 @@ local function handle_wrong_furniture_shelf(self, furniture_url_str, furniture_p
 end
 
 function on_furniture_clicked(self, message)
-	local furniture_url_str = tostring(message.url):match("%[(.-)%]") or tostring(message.url)
+	-- 🚨 Release-safe (defold/defold#13125): message.url llega como hash
+	--    (go.get_id()); tostring(hash) solo devuelve la ruta en DEBUG. El
+	--    registro resuelve la MISMA ruta canónica que generaba el parseo en
+	--    debug ("/furniture/slot_shelf_pal") → claves idénticas y partidas
+	--    guardadas (inventory_furniture_slots) compatibles.
+	local furniture_url_str = id_registry.path_of(message.url)
+		or tostring(message.url):match("%[(.-)%]")
+		or tostring(message.url)
 
 	-- 🖼️ Slot con objeto COMPLETADO (vitrina): mostrar su información de
 	-- exhibición en lugar de la interacción de mueble — mismo panel que en fase

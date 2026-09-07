@@ -24,6 +24,7 @@ local config = require "main.config"
 local npc_spawn_state = require "main.npc_spawn_state"
 local patrol = require "features.npc.npc_patrol"
 local inventory_core = require "main.inventory_core" -- 🛠️ gate del quiz de restauración (módulo puro, sin API Defold)
+local id_registry = require "main.go_id_registry" -- 🚨 nombre real del GO sin reverse-hash (solo existe en DEBUG)
 -- 🔧 DEBUG granular: true = loguea cuando M.DEBUG esté activo; false = silenciado
 local DEBUG_NPC = false
 local dprint = config.make_log(DEBUG_NPC)
@@ -274,9 +275,12 @@ end
 -- ============================================
 
 function init(self)
-	local id_string_raw = tostring(go.get_id())
-	local clean_path = id_string_raw:match("%s*%[%s*(.-)%s*%]") or id_string_raw
-	self.npc_id_string = clean_path:match("([^/]+)$") or "npc_01"
+	-- 🚨 Release-safe (defold/defold#13125): tostring(go.get_id()) solo devuelve
+	--    la ruta en builds DEBUG (reverse-hash del engine). El registro resuelve
+	--    la ruta real con hash() de Lua (idéntico en release) → npc_01..npc_NN,
+	--    cat. Sin esto, en release el spawn manager no posiciona los NPCs, los
+	--    quizzes quedan sin estado y los diálogos no cargan.
+	self.npc_id_string = id_registry.name_of(go.get_id(), "npc_01")
 
 	-- 🎯 Registrar la URL REAL del NPC para el spawn manager
 	--    (GOTCHA #4: go.get_id() devuelve la ruta completa; nunca adivinar
