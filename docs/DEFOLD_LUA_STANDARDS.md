@@ -245,6 +245,44 @@ if message_id == "damage" then ... end
 if message_id == MSG_DAMAGE then ... end
 ```
 
+### Release-Safe Hash Rules (⚠️ GOTCHA #45 — variante release)
+
+La tabla reverse-hash del engine (hash → string original) **solo existe en
+builds DEBUG**. En release, `tostring(hash)` / `tostring(go.get_id())`
+devuelven un valor opaco (`<unknown:DEC>`) y todo código que dependa del
+string original falla en silencio. Bug real del proyecto: NPCs sin
+posicionar, puertas sin animación, sin conversaciones NPC
+(defold/defold#13125 — dos causas, ambas solo-debug).
+
+```lua
+-- ❌ FORBIDDEN — parsear el string de un hash (solo funciona en debug)
+local npc_id = tostring(go.get_id()):match("([^/]+)$")
+local is_door = tostring(other_id):find("door_") ~= nil
+
+-- ✅ CORRECT — resolver el nombre vía registro generado (ambas variantes)
+local npc_id = id_registry.name_of(go.get_id(), "npc_01")
+
+-- ✅ CORRECT — identificar por comparación de hashes por valor
+local is_door = id_registry.path_of(other_id) ~= nil
+```
+
+Reglas asociadas (detalle completo en `docs/DEV_GOTCHAS.md`, GOTCHA #45):
+
+1. `tostring()` de un hash/url: SOLO para logs de debug, nunca para lógica
+   (ids, tipos, claves de guardado).
+2. Nombres de GO: `main/go_id_registry.lua` — GENERADO por
+   `tools/generate_go_id_registry.py` (el CI lo regenera en cada build).
+   Rutas SIEMPRE planas `"/<id>"`: los GOs hijos NO anidan el path del
+   padre (`children:` es solo jerarquía de transform).
+3. Comparaciones: hash `==` hash, o mapas `*_STR` con claves hash
+   (`SLOT_TYPE_STR`, `PERIOD_STR`, `BOOK_TYPE_TO_STR`).
+4. Mensajes: enviar STRINGS ya convertidos vía mapa, nunca hashes que el
+   receptor deba "des-hashar".
+5. APIs solo-debug (`profiler`, …): proteger con guardias tipo
+   `if profiler and profiler.enable_ui then ... end` — un crash en `init()`
+   es invisible en release (consola del navegador vacía) y deja el script
+   medio inicializado.
+
 ## 3. Architecture & State Management
 
 ### No Global State (_G)

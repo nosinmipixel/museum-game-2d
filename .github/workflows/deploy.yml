@@ -31,6 +31,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Regenerar registro reverso de ids de GO (go_id_registry)
+        # main/go_id_registry.lua se genera desde las .collection: el CI lo
+        # regenera en cada build para que nunca quede desfasado tras añadir/
+        # renombrar instancias (GOTCHA #45 en docs/DEV_GOTCHAS.md).
+        run: python3 tools/generate_go_id_registry.py
+
       - name: Setup OpenJDK 25 (requisito de bob)
         uses: actions/setup-java@v6
         with:
